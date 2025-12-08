@@ -114,7 +114,7 @@ export function WalletConnect({ onP2PWalletChange, compact = false, selectedNetw
       auth: {
         options: [
           "google",
-          "passkey",
+          "email",
           "phone"
 
         ],
