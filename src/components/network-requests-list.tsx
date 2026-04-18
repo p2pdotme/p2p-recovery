@@ -30,8 +30,8 @@ export function NetworkRequestsList() {
       // Sort by count (descending)
       const sortedData = data.data.sort((a: NetworkRequest, b: NetworkRequest) => b.count - a.count)
       setRequests(sortedData)
-    } catch (err: any) {
-      setError(err.message || 'Failed to load network requests')
+    } catch (err) {
+      setError((err as Error).message || 'Failed to load network requests')
     } finally {
       setIsLoading(false)
     }

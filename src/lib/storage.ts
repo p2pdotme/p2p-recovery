@@ -1,4 +1,4 @@
-import type { NetworkKey } from './network';
+import { NETWORK_LABELS, type NetworkKey } from './network';
 
 // Default network to use when no network is selected
 const DEFAULT_NETWORK: NetworkKey = 'monad';
@@ -63,8 +63,7 @@ export function getSelectedNetwork(): NetworkKey {
 
     try {
         const network = localStorage.getItem('p2p_recovery_network');
-        // Validate that the network is a valid NetworkKey
-        if (network === 'bnb' || network === 'avax' || network === 'monad' || network === 'polygon' || network === 'optimism') {
+        if (network && network in NETWORK_LABELS) {
             return network as NetworkKey;
         }
         return DEFAULT_NETWORK;

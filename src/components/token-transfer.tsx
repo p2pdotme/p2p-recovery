@@ -16,7 +16,8 @@ import {
     isAccountDeployed,
     getInitCode,
     signUserOpHashWithThirdwebWallet,
-    getThirdwebPaymasterData
+    getThirdwebPaymasterData,
+    type UserOp,
 } from '@/lib/smart-account'
 import { ArrowRight, Loader2, CheckCircle, AlertCircle, Copy, X, AlertTriangle, ChevronDown } from 'lucide-react'
 import { NETWORKS, NETWORK_LABELS, type NetworkKey } from '@/lib/network'
@@ -155,9 +156,10 @@ export function TokenTransfer({ network }: TokenTransferProps) {
             const timer = setTimeout(() => {
                 fetchTokens(fetchMethod)
             }, 500)
-            
+
             return () => clearTimeout(timer)
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [smartAccountAddress, network, fetchMethod])
 
     const fetchBalance = async (address: Address) => {
@@ -234,8 +236,8 @@ export function TokenTransfer({ network }: TokenTransferProps) {
             if (fetchedTokens.length > 0) {
                 console.log(`Found ${fetchedTokens.length} token(s) using ${method === 'free' ? 'Native & USDC' : 'Zapper API'}`)
             }
-        } catch (err: any) {
-            setError(err.message || 'Failed to fetch tokens')
+        } catch (err) {
+            setError((err as Error).message || 'Failed to fetch tokens')
             console.error('Error fetching tokens:', err)
         } finally {
             setIsLoadingTokens(false)
@@ -365,8 +367,8 @@ export function TokenTransfer({ network }: TokenTransferProps) {
             }
 
             // Build UserOperation
-            let userOp = {
-                sender: smartAccountAddress,
+            const userOp: UserOp = {
+                sender: smartAccountAddress as Address,
                 nonce: nonce,
                 initCode: initCode, // Use generated initCode if not deployed
                 callData: executeCallData,
@@ -393,8 +395,8 @@ export function TokenTransfer({ network }: TokenTransferProps) {
                     const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0')
                     userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n
                 }
-            } catch (e: any) {
-                console.warn('Gas estimation failed, using defaults:', e.message)
+            } catch (e) {
+                console.warn('Gas estimation failed, using defaults:', (e as Error).message)
             }
 
             // Get paymaster data from Thirdweb (for sponsored gas)
@@ -405,8 +407,8 @@ export function TokenTransfer({ network }: TokenTransferProps) {
                     networkConfig.chain.id
                 )
                 userOp.paymasterAndData = paymasterData.paymasterAndData
-            } catch (e: any) {
-                console.warn('Failed to get paymaster data, user will pay gas:', e.message)
+            } catch (e) {
+                console.warn('Failed to get paymaster data, user will pay gas:', (e as Error).message)
             }
 
             // Sign UserOperation using Thirdweb wallet (owner account, not smart account)
@@ -414,21 +416,6 @@ export function TokenTransfer({ network }: TokenTransferProps) {
 
             userOp.signature = '0x' as `0x${string}`
             const userOpHash = getUserOpHash(userOp, networkConfig.entryPoint, networkConfig.chain.id)
-
-            // Get owner account address (the connected wallet address that controls the smart account)
-
-            // Most of this function is deprecated or not in used (as default pay master is triggered)
-            let ownerAddress = account.address as Address
-            if (wallet.getAdminAccount) {
-                try {
-                    const adminAccount = await wallet.getAdminAccount()
-                    if (adminAccount?.address) {
-                        ownerAddress = adminAccount.address as Address
-                    }
-                } catch (e) {
-                    console.warn('Could not get admin account, using connected account:', e)
-                }
-            }
 
             const signature = await signUserOpHashWithThirdwebWallet(
                 wallet,
@@ -446,14 +433,14 @@ export function TokenTransfer({ network }: TokenTransferProps) {
             setSuccess(`Transaction submitted! UserOp Hash: ${userOpHashResult}`)
 
             // Wait for receipt
-            let receipt = null
+            let receipt: { receipt?: { transactionHash?: string } } | null = null
             let attempts = 0
 
             while (!receipt && attempts < 30) {
                 await new Promise(r => setTimeout(r, 2000))
                 try {
                     receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], networkConfig.bundlerUrl)
-                } catch (e) {
+                } catch {
                     // Receipt not ready yet
                 }
                 attempts++
@@ -482,8 +469,8 @@ export function TokenTransfer({ network }: TokenTransferProps) {
                 setSuccess(`Transaction pending. Check explorer for UserOp: ${userOpHashResult}`)
             }
 
-        } catch (err: any) {
-            const errorMessage = err.message || 'Failed to transfer tokens'
+        } catch (err) {
+            const errorMessage = (err as Error).message || 'Failed to transfer tokens'
             // Check if it's an AA21 error (insufficient gas)
             if (errorMessage.includes('AA21') || errorMessage.includes("didn't pay prefund")) {
                 setFundingAddress(smartAccountAddress)
@@ -817,7 +804,10 @@ export function TokenTransfer({ network }: TokenTransferProps) {
 
                         {/* Message */}
                         <p className="text-center text-sm text-neutral-600 dark:text-neutral-400 mb-5">
-                            Your smart account needs native tokens ({NETWORKS[network].chain.nativeCurrency.symbol}) to pay for transaction gas fees.
+                            {NETWORKS[network].useDirectExecute
+                                ? `Your owner wallet needs ${NETWORKS[network].chain.nativeCurrency.symbol} to pay for gas fees on ${NETWORK_LABELS[network]}.`
+                                : `Your smart account needs native tokens (${NETWORKS[network].chain.nativeCurrency.symbol}) to pay for transaction gas fees.`
+                            }
                         </p>
 
                         {/* Address Box */}

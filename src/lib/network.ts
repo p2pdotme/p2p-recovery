@@ -100,6 +100,29 @@ export const mantleThirdwebChain = defineThirdwebChain({
     },
     rpc: "https://1rpc.io/mantle",
 });
+
+export const b3ThirdwebChain = defineThirdwebChain({
+    id: 8333,
+    name: "B3",
+    nativeCurrency: {
+        decimals: 18,
+        name: "Ether",
+        symbol: "ETH",
+    },
+    rpc: "https://mainnet-rpc.b3.fun",
+});
+
+export const baseThirdwebChain = defineThirdwebChain({
+    id: 8453,
+    name: "Base",
+    nativeCurrency: {
+        decimals: 18,
+        name: "Ether",
+        symbol: "ETH",
+    },
+    rpc: "https://mainnet.base.org",
+});
+
 // Custom chain def viem client
 
 // Monad Mainnet
@@ -336,18 +359,71 @@ export const mantleChain = defineChain({
     testnet: false,
 });
 
+// B3 (Gaming L3 on Base)
+export const b3Chain = defineChain({
+    id: 8333,
+    name: 'B3',
+    nativeCurrency: {
+        decimals: 18,
+        name: 'Ether',
+        symbol: 'ETH',
+    },
+    rpcUrls: {
+        default: {
+            http: ['https://mainnet-rpc.b3.fun'],
+        },
+        public: {
+            http: ['https://mainnet-rpc.b3.fun'],
+        },
+    },
+    blockExplorers: {
+        default: {
+            name: 'B3 Explorer',
+            url: 'https://explorer.b3.fun',
+        },
+    },
+    testnet: false,
+});
+
+// Base (Ethereum L2)
+export const baseChain = defineChain({
+    id: 8453,
+    name: 'Base',
+    nativeCurrency: {
+        decimals: 18,
+        name: 'Ether',
+        symbol: 'ETH',
+    },
+    rpcUrls: {
+        default: {
+            http: ['https://mainnet.base.org'],
+        },
+        public: {
+            http: ['https://mainnet.base.org'],
+        },
+    },
+    blockExplorers: {
+        default: {
+            name: 'BaseScan',
+            url: 'https://basescan.org',
+        },
+    },
+    testnet: false,
+});
+
 // Network configuration type
 export type NetworkConfig = {
-    chain: typeof monadMainnet | typeof bnbChain | typeof avalancheChain | typeof polygonChain | typeof optimismChain | typeof hyperliquidChain | typeof ethereumChain | typeof arbitrumChain | typeof mantleChain;
+    chain: typeof monadMainnet | typeof bnbChain | typeof avalancheChain | typeof polygonChain | typeof optimismChain | typeof hyperliquidChain | typeof ethereumChain | typeof arbitrumChain | typeof mantleChain | typeof b3Chain | typeof baseChain;
     bundlerUrl: string;
     entryPoint: Address;
     factoryAddress: Address;
     usdcAddress: Address;
     usdcDecimals: number;
+    useDirectExecute?: boolean; // Bypass bundler - admin EOA calls execute() directly on smart wallet
 };
 
 // Network key type
-export type NetworkKey = 'monad' | 'bnb' | 'avax' | 'polygon' | 'optimism' | 'hyperliquid' | 'ethereum' | 'arbitrum' | 'mantle';
+export type NetworkKey = 'monad' | 'bnb' | 'avax' | 'polygon' | 'optimism' | 'hyperliquid' | 'ethereum' | 'arbitrum' | 'mantle' | 'b3' | 'base';
 
 // Network configurations
 export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
@@ -423,6 +499,22 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
         usdcAddress: '0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9' as Address,
         usdcDecimals: 6,
     },
+    b3: {
+        chain: b3Chain,
+        bundlerUrl: `https://8333.bundler.thirdweb.com/${process.env.NEXT_PUBLIC_THIRDWEB_CLIENT_ID}`,
+        entryPoint: '0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789' as Address,
+        factoryAddress: '0xdE320c2E2b4953883f61774c006f9057A55B97D1' as Address,
+        usdcAddress: '0x2af198a85f9aa11cd6042a0596fbf23978514da3' as Address,
+        usdcDecimals: 6,
+    },
+    base: {
+        chain: baseChain,
+        bundlerUrl: `https://8453.bundler.thirdweb.com/${process.env.NEXT_PUBLIC_THIRDWEB_CLIENT_ID}`,
+        entryPoint: '0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789' as Address,
+        factoryAddress: '0xdE320c2E2b4953883f61774c006f9057A55B97D1' as Address,
+        usdcAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as Address,
+        usdcDecimals: 6,
+    },
 };
 
 // Network display labels
@@ -436,6 +528,8 @@ export const NETWORK_LABELS: Record<NetworkKey, string> = {
     ethereum: 'Ethereum',
     arbitrum: 'Arbitrum',
     mantle: 'Mantle',
+    b3: 'B3',
+    base: 'Base',
 };
 
 // Network chain IDs
@@ -449,6 +543,8 @@ export const NETWORK_CHAIN_IDS: Record<NetworkKey, number> = {
     ethereum: 1,
     arbitrum: 42161,
     mantle: 5000,
+    b3: 8333,
+    base: 8453,
 };
 
 // Helper to get all networks sorted alphabetically by label
@@ -469,4 +565,6 @@ export const THIRDWEB_CHAINS: Record<NetworkKey, ReturnType<typeof defineThirdwe
     ethereum: ethereumThirdwebChain,
     arbitrum: arbitrumThirdwebChain,
     mantle: mantleThirdwebChain,
+    b3: b3ThirdwebChain,
+    base: baseThirdwebChain,
 };

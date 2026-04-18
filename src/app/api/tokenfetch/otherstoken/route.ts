@@ -64,8 +64,22 @@ export async function POST(request: NextRequest) {
       throw new Error(`GraphQL Errors: ${JSON.stringify(response.data.errors)}`)
     }
 
+    type ZapperEdge = {
+      node: {
+        name: string
+        symbol: string
+        tokenAddress: string
+        balance: string
+        balanceRaw: string
+        decimals: number
+        price?: number
+        balanceUSD?: number
+        imgUrlV2?: string
+      }
+    }
+
     const portfolioData = response.data.data.portfolioV2
-    const tokens = portfolioData.tokenBalances.byToken.edges.map((edge: any) => ({
+    const tokens = portfolioData.tokenBalances.byToken.edges.map((edge: ZapperEdge) => ({
       name: edge.node.name,
       symbol: edge.node.symbol,
       address: edge.node.tokenAddress,
@@ -83,10 +97,10 @@ export async function POST(request: NextRequest) {
       totalCount: portfolioData.tokenBalances.byToken.totalCount
     })
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in other tokens API:', error)
     return NextResponse.json(
-      { error: error.message || 'Failed to fetch tokens from Zapper' },
+      { error: (error as Error).message || 'Failed to fetch tokens from Zapper' },
       { status: 500 }
     )
   }

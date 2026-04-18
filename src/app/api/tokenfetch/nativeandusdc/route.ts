@@ -151,10 +151,10 @@ export async function POST(request: NextRequest) {
       }
     })
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in native and USDC token API:', error)
     return NextResponse.json(
-      { error: error.message || 'Failed to fetch tokens' },
+      { error: (error as Error).message || 'Failed to fetch tokens' },
       { status: 500 }
     )
   }

@@ -66,8 +66,8 @@ export function NetworkRequestForm() {
         setRequestCount(null)
         setIsNewRequest(null)
       }, 5000)
-    } catch (err: any) {
-      setError(err.message || 'Failed to submit network request')
+    } catch (err) {
+      setError((err as Error).message || 'Failed to submit network request')
     } finally {
       setIsLoading(false)
     }

@@ -14,6 +14,23 @@ import type { Wallet } from 'thirdweb/wallets';
 import { client } from './thirdwebClient';
 
 
+// Shared types
+export type UserOp = {
+    sender: Address;
+    nonce: bigint;
+    initCode: `0x${string}`;
+    callData: `0x${string}`;
+    callGasLimit: bigint;
+    verificationGasLimit: bigint;
+    preVerificationGas: bigint;
+    maxFeePerGas: bigint;
+    maxPriorityFeePerGas: bigint;
+    paymasterAndData: `0x${string}`;
+    signature: `0x${string}`;
+};
+
+type HandledError = Error & { isHandled?: boolean; name?: string };
+
 // Contract ABIs
 export const ENTRY_POINT_ABI = [
     {
@@ -79,8 +96,8 @@ export async function deriveSmartAccountAddress(
         // First check if the contract exists at the address
         const code = await publicClient.getBytecode({ address: factoryAddress });
         if (!code || code === '0x') {
-            const error = new Error('Factory not deployed on this network yet');
-            (error as any).isHandled = true;
+            const error: HandledError = new Error('Factory not deployed on this network yet');
+            error.isHandled = true;
             throw error;
         }
 
@@ -93,28 +110,29 @@ export async function deriveSmartAccountAddress(
 
         // Check if the result is valid (not empty)
         if (!smartAccountAddress || smartAccountAddress === '0x' || smartAccountAddress === '0x0000000000000000000000000000000000000000') {
-            const error = new Error('Factory not deployed on this network yet');
-            (error as any).isHandled = true;
+            const error: HandledError = new Error('Factory not deployed on this network yet');
+            error.isHandled = true;
             throw error;
         }
 
         return smartAccountAddress as Address;
-    } catch (error: any) {
-        if ((error as any).isHandled) {
-            throw error;
+    } catch (error) {
+        const err = error as HandledError;
+        if (err.isHandled) {
+            throw err;
         }
-        // Just handle all errors 
-        if (error?.message?.includes('returned no data') ||
-            error?.message?.includes('does not have the function') ||
-            error?.message?.includes('address is not a contract') ||
-            error?.name === 'ContractFunctionExecutionError') {
-            const friendlyError = new Error('Factory not deployed on this network yet');
-            (friendlyError as any).isHandled = true;
+        // Just handle all errors
+        if (err?.message?.includes('returned no data') ||
+            err?.message?.includes('does not have the function') ||
+            err?.message?.includes('address is not a contract') ||
+            err?.name === 'ContractFunctionExecutionError') {
+            const friendlyError: HandledError = new Error('Factory not deployed on this network yet');
+            friendlyError.isHandled = true;
             throw friendlyError;
         }
 
-        const genericError = new Error('Failed to derive smart account address');
-        (genericError as any).isHandled = true;
+        const genericError: HandledError = new Error('Failed to derive smart account address');
+        genericError.isHandled = true;
         throw genericError;
     }
 }
@@ -133,7 +151,7 @@ export async function signUserOpHashWithThirdwebWallet(
     if (wallet.getAdminAccount) {
         try {
             ownerAccount = await wallet.getAdminAccount();
-        } catch (e) {
+        } catch {
             // Fall through to getAccount
         }
     }
@@ -155,7 +173,7 @@ export async function signUserOpHashWithThirdwebWallet(
         if (typeof sig === "string" && sig.startsWith("0x")) {
             return sig as `0x${string}`;
         }
-    } catch (error) {
+    } catch {
         // Fall through to error
     }
 
@@ -166,7 +184,7 @@ export async function signUserOpHashWithThirdwebWallet(
 }
 
 // Pack UserOperation for hashing (ERC-4337 v0.6)
-function packUserOp(userOp: any) {
+function packUserOp(userOp: UserOp) {
     return encodeAbiParameters(
         [
             { type: 'address' },
@@ -196,7 +214,7 @@ function packUserOp(userOp: any) {
 }
 
 // Calculate UserOperation hash
-export function getUserOpHash(userOp: any, entryPoint: Address, chainId: number) {
+export function getUserOpHash(userOp: UserOp, entryPoint: Address, chainId: number) {
     const packed = packUserOp(userOp);
     const userOpHash = keccak256(packed);
 
@@ -209,7 +227,7 @@ export function getUserOpHash(userOp: any, entryPoint: Address, chainId: number)
 }
 
 // Format UserOp for bundler (convert BigInts to hex strings)
-export function formatUserOpForBundler(userOp: any) {
+export function formatUserOpForBundler(userOp: UserOp) {
     return {
         sender: userOp.sender,
         nonce: toHex(userOp.nonce),
@@ -226,7 +244,7 @@ export function formatUserOpForBundler(userOp: any) {
 }
 
 // JSON-RPC call helper
-export async function bundlerRpc(method: string, params: any[], bundlerRpcUrl: string) {
+export async function bundlerRpc(method: string, params: unknown[], bundlerRpcUrl: string) {
     const response = await fetch(bundlerRpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -247,7 +265,7 @@ export async function bundlerRpc(method: string, params: any[], bundlerRpcUrl: s
 
 // Get Thirdweb Paymaster data for sponsored transactions
 export async function getThirdwebPaymasterData(
-    userOp: any,
+    userOp: UserOp,
     entryPoint: Address,
     chainId: number
 ): Promise<{ paymasterAndData: `0x${string}` }> {
@@ -401,7 +419,7 @@ export async function deploySmartAccount(
             const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], network.bundlerUrl);
             maxFeePerGas = BigInt(gasPrices.standard.maxFeePerGas);
             maxPriorityFeePerGas = BigInt(gasPrices.standard.maxPriorityFeePerGas);
-        } catch (e) {
+        } catch {
             console.warn('Failed to get bundler gas prices, using fallback');
             maxFeePerGas = 1500000000n; // 1.5 gwei minimum
             maxPriorityFeePerGas = 1500000000n;
@@ -411,7 +429,7 @@ export async function deploySmartAccount(
         const DUMMY_SIG = '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
 
         // Build UserOperation for deployment (empty callData - just deploy)
-        let userOp = {
+        const userOp: UserOp = {
             sender: smartAccountAddress,
             nonce: nonce,
             initCode: initCode,
@@ -439,8 +457,8 @@ export async function deploySmartAccount(
                 const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0');
                 userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n;
             }
-        } catch (e: any) {
-            console.warn('Gas estimation failed, using defaults:', e.message);
+        } catch (e) {
+            console.warn('Gas estimation failed, using defaults:', (e as Error).message);
         }
 
         // Sign UserOperation
@@ -459,14 +477,14 @@ export async function deploySmartAccount(
         ], network.bundlerUrl);
 
         // Wait for receipt
-        let receipt = null;
+        let receipt: { success?: boolean; receipt?: { transactionHash?: string } } | null = null;
         let attempts = 0;
 
         while (!receipt && attempts < 30) {
             await new Promise(r => setTimeout(r, 2000));
             try {
                 receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], network.bundlerUrl);
-            } catch (e) {
+            } catch {
                 // Receipt not ready yet
             }
             attempts++;
@@ -486,12 +504,181 @@ export async function deploySmartAccount(
             };
         }
 
-    } catch (error: any) {
+    } catch (error) {
         console.error('Error deploying smart account:', error);
         return {
             success: false,
-            error: error.message || 'Failed to deploy smart account'
+            error: (error as Error).message || 'Failed to deploy smart account'
         };
+    }
+}
+
+// Transfer tokens from a smart account using a raw private key
+// Supports native tokens (tokenAddress = zero address) and ERC-20s.
+// Handles account deployment automatically by including initCode when needed.
+export async function transferWithPrivateKey(params: {
+    privateKey: string;
+    recipient: Address;
+    amount: bigint;
+    tokenAddress: Address; // zero address for native
+    decimals: number;
+    networkKey: NetworkKey;
+}): Promise<{ success: boolean; txHash?: string; userOpHash?: string; error?: string }> {
+    try {
+        const { privateKey, recipient, amount, tokenAddress, networkKey } = params;
+        const network = NETWORKS[networkKey];
+
+        const key = (privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`) as `0x${string}`;
+        const signer = privateKeyToAccount(key);
+
+        const smartAccountAddress = await deriveSmartAccountAddress(
+            signer.address,
+            network.factoryAddress,
+            '0x',
+            networkKey
+        );
+
+        const publicClient = createPublicClient({
+            chain: network.chain,
+            transport: http(network.chain.rpcUrls.default.http[0]),
+        });
+
+        const deployed = await isAccountDeployed(smartAccountAddress, networkKey);
+        const initCode: `0x${string}` = deployed
+            ? '0x'
+            : getInitCode(network.factoryAddress, signer.address);
+
+        const nonce = await publicClient.readContract({
+            address: network.entryPoint,
+            abi: ENTRY_POINT_ABI,
+            functionName: 'getNonce',
+            args: [smartAccountAddress, 0n],
+        });
+
+        const isNative = tokenAddress.toLowerCase() === '0x0000000000000000000000000000000000000000';
+
+        let executeCallData: `0x${string}`;
+        if (isNative) {
+            executeCallData = encodeFunctionData({
+                abi: SMART_ACCOUNT_ABI,
+                functionName: 'execute',
+                args: [recipient, amount, '0x' as `0x${string}`],
+            });
+        } else {
+            const transferCallData = encodeFunctionData({
+                abi: ERC20_ABI,
+                functionName: 'transfer',
+                args: [recipient, amount],
+            });
+            executeCallData = encodeFunctionData({
+                abi: SMART_ACCOUNT_ABI,
+                functionName: 'execute',
+                args: [tokenAddress, 0n, transferCallData],
+            });
+        }
+
+        let maxFeePerGas: bigint;
+        let maxPriorityFeePerGas: bigint;
+        try {
+            const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], network.bundlerUrl);
+            maxFeePerGas = BigInt(gasPrices.standard.maxFeePerGas);
+            maxPriorityFeePerGas = BigInt(gasPrices.standard.maxPriorityFeePerGas);
+        } catch {
+            maxFeePerGas = 1500000000n;
+            maxPriorityFeePerGas = 1500000000n;
+        }
+
+        const DUMMY_SIG = '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
+
+        const userOp: UserOp = {
+            sender: smartAccountAddress,
+            nonce,
+            initCode,
+            callData: executeCallData,
+            callGasLimit: 300000n,
+            verificationGasLimit: deployed ? 300000n : 1000000n,
+            preVerificationGas: 600000n,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
+            paymasterAndData: '0x' as `0x${string}`,
+            signature: DUMMY_SIG as `0x${string}`,
+        };
+
+        try {
+            const gasEstimate = await bundlerRpc('eth_estimateUserOperationGas', [
+                formatUserOpForBundler(userOp),
+                network.entryPoint,
+            ], network.bundlerUrl);
+            if (gasEstimate) {
+                userOp.callGasLimit = BigInt(gasEstimate.callGasLimit || '0x493e0');
+                userOp.verificationGasLimit = BigInt(gasEstimate.verificationGasLimit || '0x493e0');
+                const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0');
+                userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n;
+            }
+        } catch (e) {
+            console.warn('Gas estimation failed, using defaults:', (e as Error).message);
+        }
+
+        try {
+            const paymasterData = await getThirdwebPaymasterData(userOp, network.entryPoint, network.chain.id);
+            userOp.paymasterAndData = paymasterData.paymasterAndData;
+        } catch (e) {
+            console.warn('Paymaster sponsorship unavailable:', (e as Error).message);
+        }
+
+        userOp.signature = '0x' as `0x${string}`;
+        const userOpHash = getUserOpHash(userOp, network.entryPoint, network.chain.id);
+        userOp.signature = await signer.signMessage({ message: { raw: userOpHash } });
+
+        const formattedUserOp = formatUserOpForBundler(userOp);
+
+        let userOpHashResult: string;
+        try {
+            userOpHashResult = await bundlerRpc('eth_sendUserOperation', [
+                formattedUserOp,
+                network.entryPoint,
+            ], network.bundlerUrl);
+        } catch (bundlerError) {
+            const err = bundlerError as Error;
+            const errorMessage = err.message || JSON.stringify(bundlerError);
+            if (errorMessage.includes("didn't pay prefund") || errorMessage.includes('AA21')) {
+                return { success: false, error: 'PREFUND_REQUIRED' };
+            }
+            throw bundlerError;
+        }
+
+        let receipt: { success?: boolean; receipt?: { transactionHash?: string } } | null = null;
+        let attempts = 0;
+        while (!receipt && attempts < 30) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+                receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], network.bundlerUrl);
+            } catch {
+                // pending
+            }
+            attempts++;
+        }
+
+        if (receipt && receipt.success) {
+            return {
+                success: true,
+                txHash: receipt.receipt?.transactionHash,
+                userOpHash: userOpHashResult,
+            };
+        }
+
+        return {
+            success: false,
+            error: 'Transaction pending or failed',
+            userOpHash: userOpHashResult,
+        };
+    } catch (error) {
+        const err = error as Error;
+        const errorMessage = err.message || JSON.stringify(error);
+        if (errorMessage.includes("didn't pay prefund") || errorMessage.includes('AA21')) {
+            return { success: false, error: 'PREFUND_REQUIRED' };
+        }
+        return { success: false, error: err.message || 'Failed to transfer' };
     }
 }
 
@@ -517,7 +704,7 @@ export async function deploySmartAccountWithWallet(
         if (wallet.getAdminAccount) {
             try {
                 ownerAccount = await wallet.getAdminAccount();
-            } catch (e) {
+            } catch {
                 // Fall through to getAccount
             }
         }
@@ -561,7 +748,7 @@ export async function deploySmartAccountWithWallet(
             const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], network.bundlerUrl);
             maxFeePerGas = BigInt(gasPrices.standard.maxFeePerGas);
             maxPriorityFeePerGas = BigInt(gasPrices.standard.maxPriorityFeePerGas);
-        } catch (e) {
+        } catch {
             console.warn('Failed to get bundler gas prices, using fallback');
             maxFeePerGas = 1500000000n; // 1.5 gwei minimum
             maxPriorityFeePerGas = 1500000000n;
@@ -571,7 +758,7 @@ export async function deploySmartAccountWithWallet(
         const DUMMY_SIG = '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
 
         // Build UserOperation for deployment (empty callData - just deploy)
-        let userOp = {
+        const userOp: UserOp = {
             sender: smartAccountAddress,
             nonce: nonce,
             initCode: initCode,
@@ -599,8 +786,8 @@ export async function deploySmartAccountWithWallet(
                 const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0');
                 userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n;
             }
-        } catch (e: any) {
-            console.warn('Gas estimation failed, using defaults:', e.message);
+        } catch (e) {
+            console.warn('Gas estimation failed, using defaults:', (e as Error).message);
         }
 
         // Get paymaster data from Thirdweb (for sponsored gas)
@@ -611,8 +798,8 @@ export async function deploySmartAccountWithWallet(
                 network.chain.id
             );
             userOp.paymasterAndData = paymasterData.paymasterAndData;
-        } catch (e: any) {
-            console.warn('Failed to get paymaster data, user will pay gas:', e.message);
+        } catch (e) {
+            console.warn('Failed to get paymaster data, user will pay gas:', (e as Error).message);
         }
 
         // Sign UserOperation using Thirdweb wallet
@@ -633,9 +820,9 @@ export async function deploySmartAccountWithWallet(
                 formattedUserOp,
                 network.entryPoint,
             ], network.bundlerUrl);
-        } catch (bundlerError: any) {
+        } catch (bundlerError) {
             // Check for prefund error
-            const errorMessage = bundlerError.message || JSON.stringify(bundlerError);
+            const errorMessage = (bundlerError as Error).message || JSON.stringify(bundlerError);
             if (errorMessage.includes('didn\'t pay prefund') || errorMessage.includes('AA21')) {
                 return {
                     success: false,
@@ -646,14 +833,14 @@ export async function deploySmartAccountWithWallet(
         }
 
         // Wait for receipt
-        let receipt = null;
+        let receipt: { success?: boolean; receipt?: { transactionHash?: string } } | null = null;
         let attempts = 0;
 
         while (!receipt && attempts < 30) {
             await new Promise(r => setTimeout(r, 2000));
             try {
                 receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], network.bundlerUrl);
-            } catch (e) {
+            } catch {
                 // Receipt not ready yet
             }
             attempts++;
@@ -673,21 +860,22 @@ export async function deploySmartAccountWithWallet(
             };
         }
 
-    } catch (error: any) {
+    } catch (error) {
         console.error('Error deploying smart account with wallet:', error);
-        
+
         // Check for prefund error
-        const errorMessage = error.message || JSON.stringify(error);
+        const err = error as Error;
+        const errorMessage = err.message || JSON.stringify(error);
         if (errorMessage.includes('didn\'t pay prefund') || errorMessage.includes('AA21')) {
             return {
                 success: false,
                 error: 'Fund your smart account address'
             };
         }
-        
+
         return {
             success: false,
-            error: error.message || 'Failed to deploy smart account'
+            error: err.message || 'Failed to deploy smart account'
         };
     }
 }

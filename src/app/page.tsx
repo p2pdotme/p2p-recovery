@@ -2,12 +2,13 @@
 
 import { useState, useEffect } from 'react'
 import Image from 'next/image'
+import Link from 'next/link'
 import { TokenTransfer } from '@/components/token-transfer'
 // import { NetworkRequestForm } from '@/components/network-request-form'
 // import { NetworkRequestsList } from '@/components/network-requests-list'
 import { WalletConnect } from '@/components/wallet-connect'
 import { SmartAccountDisplay } from '@/components/smart-account-display'
-import { ChevronDown, Search, Wallet } from 'lucide-react'
+import { ChevronDown, Key } from 'lucide-react'
 import { saveSelectedNetwork, getSelectedNetwork } from '@/lib/storage'
 import { NETWORK_LABELS, NETWORK_CHAIN_IDS, getNetworksSortedByLabel, type NetworkKey } from '@/lib/network'
 
@@ -18,8 +19,12 @@ export default function Home() {
   const [smartAccountAddress, setSmartAccountAddress] = useState<string>('')
 
   useEffect(() => {
+    // Hydrate selected network from localStorage on mount
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedNetwork(getSelectedNetwork())
+  }, [])
 
+  useEffect(() => {
     // Close dropdown when clicking outside
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement
@@ -96,7 +101,7 @@ export default function Home() {
         </div>
 
         {/* How to Get Started Section */}
-        <div className="mb-6 sm:mb-8">
+        <div className="mb-6 sm:mb-8 grid sm:grid-cols-2 gap-3 sm:gap-4">
           <a
             href="https://youtube.com/shorts/kPV5I8Pp-z0?feature=share"
             target="_blank"
@@ -113,6 +118,24 @@ export default function Home() {
               </svg>
             </div>
           </a>
+
+          <Link
+            href="/private-key"
+            className="group block w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg sm:rounded-xl p-4 sm:p-5 md:p-6 hover:border-brand-500 dark:hover:border-brand-400 shadow-soft hover:shadow-brand transition-all"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-left flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <h3 className="text-sm sm:text-base md:text-lg font-semibold text-neutral-900 dark:text-neutral-50">Recover with Private Key</h3>
+                  <span className="px-2 py-0.5 bg-warning/10 text-warning-dark dark:text-warning-light text-[10px] font-medium rounded-full border border-warning/30">
+                    Advanced
+                  </span>
+                </div>
+                <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400">Withdraw from your smart account by pasting a private key</p>
+              </div>
+              <Key className="w-4 h-4 sm:w-5 sm:h-5 md:w-6 md:h-6 text-neutral-400 group-hover:text-brand-500 dark:group-hover:text-brand-400 flex-shrink-0 transition-colors" />
+            </div>
+          </Link>
         </div>
 
         {/* Compact Connect Wallet Button */}

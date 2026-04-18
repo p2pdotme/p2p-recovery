@@ -5,7 +5,7 @@ import { Address } from 'viem'
 import { deriveSmartAccountAddress, isAccountDeployed, deploySmartAccountWithWallet } from '@/lib/smart-account'
 import { saveSmartAccountData } from '@/lib/storage'
 import { Copy, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
-import { type NetworkKey } from '@/lib/network'
+import { NETWORKS, type NetworkKey } from '@/lib/network'
 import { useActiveWallet } from 'thirdweb/react'
 
 interface SmartAccountDisplayProps {
@@ -68,12 +68,13 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
         // Check if account is deployed
         const deployed = await isAccountDeployed(smartAccount, network)
         setIsDeployed(deployed)
-      } catch (err: any) {
+      } catch (err) {
+        const e = err as Error & { isHandled?: boolean }
         // Only log if it's not a handled error (to prevent Next.js error overlay)
-        if (!(err as any).isHandled) {
+        if (!e.isHandled) {
           console.error('Error deriving smart account:', err)
         }
-        setError(err.message || 'Failed to derive smart account address')
+        setError(e.message || 'Failed to derive smart account address')
         setSmartAccountAddress('')
         setIsDeployed(null)
         onSmartAccountChange?.('')
@@ -83,6 +84,7 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
     }
 
     deriveAccount()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p2pUserWallet, network, factoryAddress, factoryData])
 
   const copyToClipboard = async (text: string) => {
@@ -106,6 +108,7 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
     setDeploySuccess('')
 
     try {
+      // Standard ERC-4337 deploy path (via bundler)
       const result = await deploySmartAccountWithWallet(
         wallet,
         smartAccountAddress as Address,
@@ -114,7 +117,7 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
 
       if (result.success) {
         setDeploySuccess(
-          result.txHash 
+          result.txHash
             ? `Deployment successful! Transaction: ${result.txHash.slice(0, 10)}...${result.txHash.slice(-8)}`
             : 'Deployment successful!'
         )
@@ -126,9 +129,14 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
       } else {
         setDeployError(result.error || 'Deployment failed')
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('Error deploying smart account:', err)
-      setDeployError(err.message || 'Failed to deploy smart account')
+      const msg = (err as Error).message || 'Failed to deploy smart account'
+      if (msg.includes('insufficient funds') || msg.includes('exceeds the balance')) {
+        setDeployError(`Insufficient gas. Fund your owner wallet with ${NETWORKS[network].chain.nativeCurrency.symbol} on ${NETWORKS[network].chain.name}.`)
+      } else {
+        setDeployError(msg)
+      }
     } finally {
       setIsDeploying(false)
     }

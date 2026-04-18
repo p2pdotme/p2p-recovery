@@ -114,10 +114,10 @@ export async function POST(request: NextRequest) {
         isNew: true,
       })
     }
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error submitting network request:', error)
     return NextResponse.json(
-      { error: error.message || 'Failed to submit network request' },
+      { error: (error as Error).message || 'Failed to submit network request' },
       { status: 500 }
     )
   }
@@ -143,10 +143,10 @@ export async function GET() {
     }))
 
     return NextResponse.json({ data })
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error fetching network requests:', error)
     return NextResponse.json(
-      { error: error.message || 'Failed to fetch network requests' },
+      { error: (error as Error).message || 'Failed to fetch network requests' },
       { status: 500 }
     )
   }
