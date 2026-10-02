@@ -6,11 +6,13 @@ import {
     encodeAbiParameters,
     toHex,
     parseAbi,
+    parseEventLogs,
     Address,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { NETWORKS, type NetworkKey } from './network';
+import { NETWORKS, THIRDWEB_CHAINS, type NetworkKey } from './network';
 import type { Wallet } from 'thirdweb/wallets';
+import { prepareTransaction, sendAndConfirmTransaction } from 'thirdweb';
 import { client } from './thirdwebClient';
 
 
@@ -27,6 +29,16 @@ export const ENTRY_POINT_ABI = [
         type: 'function'
     }
 ] as const;
+
+// EntryPoint v0.6 functions used when no bundler supports the chain
+export const ENTRY_POINT_DIRECT_ABI = parseAbi([
+    'struct UserOperation { address sender; uint256 nonce; bytes initCode; bytes callData; uint256 callGasLimit; uint256 verificationGasLimit; uint256 preVerificationGas; uint256 maxFeePerGas; uint256 maxPriorityFeePerGas; bytes paymasterAndData; bytes signature; }',
+    'function handleOps(UserOperation[] ops, address beneficiary)',
+    'function depositTo(address account) payable',
+    'function balanceOf(address account) view returns (uint256)',
+    'event UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)',
+    'error FailedOp(uint256 opIndex, string reason)',
+]);
 
 export const ERC20_ABI = parseAbi([
     'function transfer(address to, uint256 amount) returns (bool)',
@@ -245,6 +257,114 @@ export async function bundlerRpc(method: string, params: any[], bundlerRpcUrl: s
     return data.result;
 }
 
+// Gas limits for direct EntryPoint submission (no bundler estimation available).
+// Generous because zkSync Era runs EVM bytecode through its emulator.
+export const DIRECT_GAS_LIMITS = {
+    callGasLimit: 1_500_000n,
+    verificationGasLimit: 1_500_000n,
+    deployVerificationGasLimit: 4_000_000n,
+    preVerificationGas: 0n,
+};
+
+// Gas prices for chains without a bundler, read from the chain RPC
+export async function getDirectGasPrices(networkKey: NetworkKey): Promise<{ maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }> {
+    const network = NETWORKS[networkKey];
+    const publicClient = createPublicClient({
+        chain: network.chain,
+        transport: http(network.chain.rpcUrls.default.http[0]),
+    });
+    const gasPrice = await publicClient.getGasPrice();
+    // 2x headroom; the EntryPoint only charges the gas actually used
+    return { maxFeePerGas: gasPrice * 2n, maxPriorityFeePerGas: gasPrice * 2n };
+}
+
+// Submit a signed UserOperation straight to the EntryPoint from the connected wallet.
+// Used on chains with no ERC-4337 bundler (e.g. zkSync Era). If the smart account
+// can't cover the prefund, the connected wallet tops up its EntryPoint deposit first.
+export async function submitUserOpDirect(
+    wallet: Wallet,
+    userOp: any,
+    networkKey: NetworkKey
+): Promise<{ txHash: string }> {
+    const network = NETWORKS[networkKey];
+    const chain = THIRDWEB_CHAINS[networkKey];
+    const account = wallet.getAccount();
+    if (!account) {
+        throw new Error('Wallet not connected');
+    }
+
+    const publicClient = createPublicClient({
+        chain: network.chain,
+        transport: http(network.chain.rpcUrls.default.http[0]),
+    });
+
+    const requiredPrefund =
+        (BigInt(userOp.callGasLimit) + BigInt(userOp.verificationGasLimit) + BigInt(userOp.preVerificationGas)) * BigInt(userOp.maxFeePerGas);
+    const [deposit, accountBalance] = await Promise.all([
+        publicClient.readContract({
+            address: network.entryPoint,
+            abi: ENTRY_POINT_DIRECT_ABI,
+            functionName: 'balanceOf',
+            args: [userOp.sender],
+        }),
+        publicClient.getBalance({ address: userOp.sender }),
+    ]);
+
+    if (deposit + accountBalance < requiredPrefund) {
+        const shortfall = requiredPrefund - deposit - accountBalance;
+        console.log(`Smart account short on gas, depositing ${shortfall} wei to EntryPoint from connected wallet`);
+        try {
+            await sendAndConfirmTransaction({
+                account,
+                transaction: prepareTransaction({
+                    client,
+                    chain,
+                    to: network.entryPoint,
+                    value: shortfall,
+                    data: encodeFunctionData({
+                        abi: ENTRY_POINT_DIRECT_ABI,
+                        functionName: 'depositTo',
+                        args: [userOp.sender],
+                    }),
+                }),
+            });
+        } catch (e: any) {
+            throw new Error(
+                `AA21 didn't pay prefund: send a small amount of ${network.chain.nativeCurrency.symbol} on ${network.chain.name} ` +
+                `to your smart account or connected wallet to cover gas (${e.message || e})`
+            );
+        }
+    }
+
+    const receipt = await sendAndConfirmTransaction({
+        account,
+        transaction: prepareTransaction({
+            client,
+            chain,
+            to: network.entryPoint,
+            data: encodeFunctionData({
+                abi: ENTRY_POINT_DIRECT_ABI,
+                functionName: 'handleOps',
+                args: [[userOp], account.address as Address],
+            }),
+        }),
+    });
+
+    if (receipt.status !== 'success') {
+        throw new Error(`EntryPoint transaction reverted: ${receipt.transactionHash}`);
+    }
+    // handleOps succeeds even when the account's call reverts, so check the op's own result
+    const [opEvent] = parseEventLogs({
+        abi: ENTRY_POINT_DIRECT_ABI,
+        eventName: 'UserOperationEvent',
+        logs: receipt.logs as any,
+    });
+    if (!opEvent?.args.success) {
+        throw new Error(`UserOperation execution failed in transaction ${receipt.transactionHash}`);
+    }
+    return { txHash: receipt.transactionHash };
+}
+
 // Get Thirdweb Paymaster data for sponsored transactions
 export async function getThirdwebPaymasterData(
     userOp: any,
@@ -368,6 +488,10 @@ export async function deploySmartAccount(
 ): Promise<{ success: boolean; txHash?: string; userOpHash?: string; error?: string }> {
     try {
         const network = NETWORKS[networkKey];
+        const bundlerUrl = network.bundlerUrl;
+        if (!bundlerUrl) {
+            return { success: false, error: `No bundler available for ${network.chain.name}` };
+        }
         const signer = privateKeyToAccount(privateKey as `0x${string}`);
 
         // Check if already deployed
@@ -398,7 +522,7 @@ export async function deploySmartAccount(
         let maxPriorityFeePerGas: bigint;
 
         try {
-            const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], network.bundlerUrl);
+            const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], bundlerUrl);
             maxFeePerGas = BigInt(gasPrices.standard.maxFeePerGas);
             maxPriorityFeePerGas = BigInt(gasPrices.standard.maxPriorityFeePerGas);
         } catch (e) {
@@ -430,7 +554,7 @@ export async function deploySmartAccount(
             const gasEstimate = await bundlerRpc('eth_estimateUserOperationGas', [
                 formatUserOpForBundler(userOp),
                 network.entryPoint,
-            ], network.bundlerUrl);
+            ], bundlerUrl);
 
             if (gasEstimate) {
                 userOp.callGasLimit = BigInt(gasEstimate.callGasLimit || '0x186a0');
@@ -456,7 +580,7 @@ export async function deploySmartAccount(
         const userOpHashResult = await bundlerRpc('eth_sendUserOperation', [
             formattedUserOp,
             network.entryPoint,
-        ], network.bundlerUrl);
+        ], bundlerUrl);
 
         // Wait for receipt
         let receipt = null;
@@ -465,7 +589,7 @@ export async function deploySmartAccount(
         while (!receipt && attempts < 30) {
             await new Promise(r => setTimeout(r, 2000));
             try {
-                receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], network.bundlerUrl);
+                receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], bundlerUrl);
             } catch (e) {
                 // Receipt not ready yet
             }
@@ -553,18 +677,24 @@ export async function deploySmartAccountWithWallet(
             args: [smartAccountAddress, 0n],
         });
 
-        // Get gas prices from Pimlico
+        const bundlerUrl = network.bundlerUrl;
+
+        // Get gas prices from Pimlico (or the chain RPC when there is no bundler)
         let maxFeePerGas: bigint;
         let maxPriorityFeePerGas: bigint;
 
-        try {
-            const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], network.bundlerUrl);
-            maxFeePerGas = BigInt(gasPrices.standard.maxFeePerGas);
-            maxPriorityFeePerGas = BigInt(gasPrices.standard.maxPriorityFeePerGas);
-        } catch (e) {
-            console.warn('Failed to get bundler gas prices, using fallback');
-            maxFeePerGas = 1500000000n; // 1.5 gwei minimum
-            maxPriorityFeePerGas = 1500000000n;
+        if (!bundlerUrl) {
+            ({ maxFeePerGas, maxPriorityFeePerGas } = await getDirectGasPrices(networkKey));
+        } else {
+            try {
+                const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], bundlerUrl);
+                maxFeePerGas = BigInt(gasPrices.standard.maxFeePerGas);
+                maxPriorityFeePerGas = BigInt(gasPrices.standard.maxPriorityFeePerGas);
+            } catch (e) {
+                console.warn('Failed to get bundler gas prices, using fallback');
+                maxFeePerGas = 1500000000n; // 1.5 gwei minimum
+                maxPriorityFeePerGas = 1500000000n;
+            }
         }
 
         // Dummy signature for gas estimation
@@ -576,9 +706,9 @@ export async function deploySmartAccountWithWallet(
             nonce: nonce,
             initCode: initCode,
             callData: '0x' as `0x${string}`, // Empty call - just deploy
-            callGasLimit: 100000n,
-            verificationGasLimit: 1000000n, // Higher for deployment
-            preVerificationGas: 600000n, // Increased from 500000n
+            callGasLimit: bundlerUrl ? 100000n : DIRECT_GAS_LIMITS.callGasLimit,
+            verificationGasLimit: bundlerUrl ? 1000000n : DIRECT_GAS_LIMITS.deployVerificationGasLimit, // Higher for deployment
+            preVerificationGas: bundlerUrl ? 600000n : DIRECT_GAS_LIMITS.preVerificationGas, // Increased from 500000n
             maxFeePerGas: maxFeePerGas,
             maxPriorityFeePerGas: maxPriorityFeePerGas,
             paymasterAndData: '0x' as `0x${string}`,
@@ -586,33 +716,37 @@ export async function deploySmartAccountWithWallet(
         };
 
         // Estimate gas
-        try {
-            const gasEstimate = await bundlerRpc('eth_estimateUserOperationGas', [
-                formatUserOpForBundler(userOp),
-                network.entryPoint,
-            ], network.bundlerUrl);
+        if (bundlerUrl) {
+            try {
+                const gasEstimate = await bundlerRpc('eth_estimateUserOperationGas', [
+                    formatUserOpForBundler(userOp),
+                    network.entryPoint,
+                ], bundlerUrl);
 
-            if (gasEstimate) {
-                userOp.callGasLimit = BigInt(gasEstimate.callGasLimit || '0x186a0');
-                userOp.verificationGasLimit = BigInt(gasEstimate.verificationGasLimit || '0xf4240');
-                // Ensure preVerificationGas is at least 600000 or the estimated value, whichever is higher
-                const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0');
-                userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n;
+                if (gasEstimate) {
+                    userOp.callGasLimit = BigInt(gasEstimate.callGasLimit || '0x186a0');
+                    userOp.verificationGasLimit = BigInt(gasEstimate.verificationGasLimit || '0xf4240');
+                    // Ensure preVerificationGas is at least 600000 or the estimated value, whichever is higher
+                    const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0');
+                    userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n;
+                }
+            } catch (e: any) {
+                console.warn('Gas estimation failed, using defaults:', e.message);
             }
-        } catch (e: any) {
-            console.warn('Gas estimation failed, using defaults:', e.message);
         }
 
         // Get paymaster data from Thirdweb (for sponsored gas)
-        try {
-            const paymasterData = await getThirdwebPaymasterData(
-                userOp,
-                network.entryPoint,
-                network.chain.id
-            );
-            userOp.paymasterAndData = paymasterData.paymasterAndData;
-        } catch (e: any) {
-            console.warn('Failed to get paymaster data, user will pay gas:', e.message);
+        if (bundlerUrl) {
+            try {
+                const paymasterData = await getThirdwebPaymasterData(
+                    userOp,
+                    network.entryPoint,
+                    network.chain.id
+                );
+                userOp.paymasterAndData = paymasterData.paymasterAndData;
+            } catch (e: any) {
+                console.warn('Failed to get paymaster data, user will pay gas:', e.message);
+            }
         }
 
         // Sign UserOperation using Thirdweb wallet
@@ -625,6 +759,11 @@ export async function deploySmartAccountWithWallet(
         );
         userOp.signature = signature;
 
+        if (!bundlerUrl) {
+            const { txHash } = await submitUserOpDirect(wallet, userOp, networkKey);
+            return { success: true, txHash };
+        }
+
         // Submit to bundler
         const formattedUserOp = formatUserOpForBundler(userOp);
         let userOpHashResult: string;
@@ -632,7 +771,7 @@ export async function deploySmartAccountWithWallet(
             userOpHashResult = await bundlerRpc('eth_sendUserOperation', [
                 formattedUserOp,
                 network.entryPoint,
-            ], network.bundlerUrl);
+            ], bundlerUrl);
         } catch (bundlerError: any) {
             // Check for prefund error
             const errorMessage = bundlerError.message || JSON.stringify(bundlerError);
@@ -652,7 +791,7 @@ export async function deploySmartAccountWithWallet(
         while (!receipt && attempts < 30) {
             await new Promise(r => setTimeout(r, 2000));
             try {
-                receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], network.bundlerUrl);
+                receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], bundlerUrl);
             } catch (e) {
                 // Receipt not ready yet
             }

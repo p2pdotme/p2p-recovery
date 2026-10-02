@@ -16,7 +16,10 @@ import {
     isAccountDeployed,
     getInitCode,
     signUserOpHashWithThirdwebWallet,
-    getThirdwebPaymasterData
+    getThirdwebPaymasterData,
+    getDirectGasPrices,
+    submitUserOpDirect,
+    DIRECT_GAS_LIMITS
 } from '@/lib/smart-account'
 import { ArrowRight, Loader2, CheckCircle, AlertCircle, Copy, X, AlertTriangle, ChevronDown } from 'lucide-react'
 import { NETWORKS, NETWORK_LABELS, type NetworkKey } from '@/lib/network'
@@ -350,18 +353,25 @@ export function TokenTransfer({ network }: TokenTransferProps) {
                 })
             }
 
-            // Get gas prices from Pimlico
+            // No bundler on this chain: the connected wallet submits to the EntryPoint directly
+            const bundlerUrl = networkConfig.bundlerUrl
+
+            // Get gas prices from Pimlico (or the chain RPC when there is no bundler)
             let maxFeePerGas: bigint
             let maxPriorityFeePerGas: bigint
 
-            try {
-                const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], networkConfig.bundlerUrl)
-                maxFeePerGas = BigInt(gasPrices.standard.maxFeePerGas)
-                maxPriorityFeePerGas = BigInt(gasPrices.standard.maxPriorityFeePerGas)
-            } catch (e) {
-                console.warn('Failed to get Pimlico gas prices, using fallback:', e)
-                maxFeePerGas = 1500000000n; // 1.5 gwei minimum
-                maxPriorityFeePerGas = 1500000000n;
+            if (!bundlerUrl) {
+                ({ maxFeePerGas, maxPriorityFeePerGas } = await getDirectGasPrices(network))
+            } else {
+                try {
+                    const gasPrices = await bundlerRpc('pimlico_getUserOperationGasPrice', [], bundlerUrl)
+                    maxFeePerGas = BigInt(gasPrices.standard.maxFeePerGas)
+                    maxPriorityFeePerGas = BigInt(gasPrices.standard.maxPriorityFeePerGas)
+                } catch (e) {
+                    console.warn('Failed to get Pimlico gas prices, using fallback:', e)
+                    maxFeePerGas = 1500000000n; // 1.5 gwei minimum
+                    maxPriorityFeePerGas = 1500000000n;
+                }
             }
 
             // Build UserOperation
@@ -370,43 +380,47 @@ export function TokenTransfer({ network }: TokenTransferProps) {
                 nonce: nonce,
                 initCode: initCode, // Use generated initCode if not deployed
                 callData: executeCallData,
-                callGasLimit: 300000n,
-                verificationGasLimit: deployed ? 300000n : 1000000n, // Higher for deployment
-                preVerificationGas: 600000n, // Increased from 500000n to handle bundler requirements
+                callGasLimit: bundlerUrl ? 300000n : DIRECT_GAS_LIMITS.callGasLimit,
+                verificationGasLimit: bundlerUrl
+                    ? (deployed ? 300000n : 1000000n) // Higher for deployment
+                    : (deployed ? DIRECT_GAS_LIMITS.verificationGasLimit : DIRECT_GAS_LIMITS.deployVerificationGasLimit),
+                preVerificationGas: bundlerUrl ? 600000n : DIRECT_GAS_LIMITS.preVerificationGas, // Increased from 500000n to handle bundler requirements
                 maxFeePerGas: maxFeePerGas,
                 maxPriorityFeePerGas: maxPriorityFeePerGas,
                 paymasterAndData: '0x' as `0x${string}`,
                 signature: DUMMY_SIGNATURE as `0x${string}`,
             }
 
-            // Estimate gas
-            try {
-                const gasEstimate = await bundlerRpc('eth_estimateUserOperationGas', [
-                    formatUserOpForBundler(userOp),
-                    networkConfig.entryPoint,
-                ], networkConfig.bundlerUrl)
+            if (bundlerUrl) {
+                // Estimate gas
+                try {
+                    const gasEstimate = await bundlerRpc('eth_estimateUserOperationGas', [
+                        formatUserOpForBundler(userOp),
+                        networkConfig.entryPoint,
+                    ], bundlerUrl)
 
-                if (gasEstimate) {
-                    userOp.callGasLimit = BigInt(gasEstimate.callGasLimit || '0x493e0')
-                    userOp.verificationGasLimit = BigInt(gasEstimate.verificationGasLimit || '0x493e0')
-                    // Ensure preVerificationGas is at least 600000 or the estimated value, whichever is higher
-                    const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0')
-                    userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n
+                    if (gasEstimate) {
+                        userOp.callGasLimit = BigInt(gasEstimate.callGasLimit || '0x493e0')
+                        userOp.verificationGasLimit = BigInt(gasEstimate.verificationGasLimit || '0x493e0')
+                        // Ensure preVerificationGas is at least 600000 or the estimated value, whichever is higher
+                        const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0')
+                        userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n
+                    }
+                } catch (e: any) {
+                    console.warn('Gas estimation failed, using defaults:', e.message)
                 }
-            } catch (e: any) {
-                console.warn('Gas estimation failed, using defaults:', e.message)
-            }
 
-            // Get paymaster data from Thirdweb (for sponsored gas)
-            try {
-                const paymasterData = await getThirdwebPaymasterData(
-                    userOp,
-                    networkConfig.entryPoint,
-                    networkConfig.chain.id
-                )
-                userOp.paymasterAndData = paymasterData.paymasterAndData
-            } catch (e: any) {
-                console.warn('Failed to get paymaster data, user will pay gas:', e.message)
+                // Get paymaster data from Thirdweb (for sponsored gas)
+                try {
+                    const paymasterData = await getThirdwebPaymasterData(
+                        userOp,
+                        networkConfig.entryPoint,
+                        networkConfig.chain.id
+                    )
+                    userOp.paymasterAndData = paymasterData.paymasterAndData
+                } catch (e: any) {
+                    console.warn('Failed to get paymaster data, user will pay gas:', e.message)
+                }
             }
 
             // Sign UserOperation using Thirdweb wallet (owner account, not smart account)
@@ -436,31 +450,41 @@ export function TokenTransfer({ network }: TokenTransferProps) {
             )
             userOp.signature = signature
 
-            // Submit to bundler
-            const formattedUserOp = formatUserOpForBundler(userOp)
-            const userOpHashResult = await bundlerRpc('eth_sendUserOperation', [
-                formattedUserOp,
-                networkConfig.entryPoint,
-            ], networkConfig.bundlerUrl)
+            let receiptTxHash: string | null = null
+            let userOpHashResult = ''
 
-            setSuccess(`Transaction submitted! UserOp Hash: ${userOpHashResult}`)
+            if (!bundlerUrl) {
+                receiptTxHash = (await submitUserOpDirect(wallet, userOp, network)).txHash
+            } else {
+                // Submit to bundler
+                const formattedUserOp = formatUserOpForBundler(userOp)
+                userOpHashResult = await bundlerRpc('eth_sendUserOperation', [
+                    formattedUserOp,
+                    networkConfig.entryPoint,
+                ], bundlerUrl)
 
-            // Wait for receipt
-            let receipt = null
-            let attempts = 0
+                setSuccess(`Transaction submitted! UserOp Hash: ${userOpHashResult}`)
 
-            while (!receipt && attempts < 30) {
-                await new Promise(r => setTimeout(r, 2000))
-                try {
-                    receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], networkConfig.bundlerUrl)
-                } catch (e) {
-                    // Receipt not ready yet
+                // Wait for receipt
+                let receipt = null
+                let attempts = 0
+
+                while (!receipt && attempts < 30) {
+                    await new Promise(r => setTimeout(r, 2000))
+                    try {
+                        receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], bundlerUrl)
+                    } catch (e) {
+                        // Receipt not ready yet
+                    }
+                    attempts++
                 }
-                attempts++
+                if (receipt) {
+                    receiptTxHash = receipt.receipt?.transactionHash || ''
+                }
             }
 
-            if (receipt) {
-                setTxHash(receipt.receipt?.transactionHash || '')
+            if (receiptTxHash !== null) {
+                setTxHash(receiptTxHash)
                 const deployMsg = !deployed ? ' (Account deployed and transfer completed!)' : ''
                 const actionMsg = transferMode === 'recover'
                     ? `Recovery successful! ${amount} ${tokenToTransfer.symbol} sent to owner address`
@@ -750,7 +774,7 @@ export function TokenTransfer({ network }: TokenTransferProps) {
                                     <span className="hidden sm:inline">Copy</span>
                                 </button>
                                 <a
-                                    href={`${NETWORKS[network].chain.blockExplorers.default.url}/tx/${txHash}`}
+                                    href={`${NETWORKS[network].chain.blockExplorers?.default.url}/tx/${txHash}`}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="flex items-center gap-1.5 px-3 py-1.5 bg-success dark:bg-success-dark border border-success/30 rounded-md hover:bg-success-dark transition-colors text-xs font-medium text-white"
