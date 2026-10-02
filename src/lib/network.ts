@@ -1,4 +1,4 @@
-import { defineChain, Address } from 'viem';
+import { defineChain, Address, type Chain } from 'viem';
 import { defineChain as defineThirdwebChain } from "thirdweb/chains";
 
 // Thirdweb chain definitions for wallet UI components
@@ -99,6 +99,38 @@ export const mantleThirdwebChain = defineThirdwebChain({
         symbol: "MNT",
     },
     rpc: "https://1rpc.io/mantle",
+});
+export const celoThirdwebChain = defineThirdwebChain({
+    id: 42220,
+    name: "Celo",
+    nativeCurrency: {
+        decimals: 18,
+        name: "Celo",
+        symbol: "CELO",
+    },
+    rpc: "https://forno.celo.org",
+});
+
+export const zksyncThirdwebChain = defineThirdwebChain({
+    id: 324,
+    name: "zkSync Era",
+    nativeCurrency: {
+        decimals: 18,
+        name: "Ether",
+        symbol: "ETH",
+    },
+    rpc: "https://mainnet.era.zksync.io",
+});
+
+export const robinhoodThirdwebChain = defineThirdwebChain({
+    id: 4663,
+    name: "Robinhood Chain",
+    nativeCurrency: {
+        decimals: 18,
+        name: "Ether",
+        symbol: "ETH",
+    },
+    rpc: "https://rpc.mainnet.chain.robinhood.com",
 });
 // Custom chain def viem client
 
@@ -336,10 +368,89 @@ export const mantleChain = defineChain({
     testnet: false,
 });
 
+// Celo Mainnet
+export const celoChain = defineChain({
+    id: 42220,
+    name: 'Celo',
+    nativeCurrency: {
+        decimals: 18,
+        name: 'Celo',
+        symbol: 'CELO',
+    },
+    rpcUrls: {
+        default: {
+            http: ['https://forno.celo.org'],
+        },
+        public: {
+            http: ['https://forno.celo.org'],
+        },
+    },
+    blockExplorers: {
+        default: {
+            name: 'Celoscan',
+            url: 'https://celoscan.io',
+        },
+    },
+    testnet: false,
+});
+
+// zkSync Era Mainnet
+export const zksyncChain = defineChain({
+    id: 324,
+    name: 'zkSync Era',
+    nativeCurrency: {
+        decimals: 18,
+        name: 'Ether',
+        symbol: 'ETH',
+    },
+    rpcUrls: {
+        default: {
+            http: ['https://mainnet.era.zksync.io'],
+        },
+        public: {
+            http: ['https://mainnet.era.zksync.io'],
+        },
+    },
+    blockExplorers: {
+        default: {
+            name: 'zkSync Explorer',
+            url: 'https://explorer.zksync.io',
+        },
+    },
+    testnet: false,
+});
+
+// Robinhood Chain Mainnet
+export const robinhoodChain = defineChain({
+    id: 4663,
+    name: 'Robinhood Chain',
+    nativeCurrency: {
+        decimals: 18,
+        name: 'Ether',
+        symbol: 'ETH',
+    },
+    rpcUrls: {
+        default: {
+            http: ['https://rpc.mainnet.chain.robinhood.com'],
+        },
+        public: {
+            http: ['https://rpc.mainnet.chain.robinhood.com'],
+        },
+    },
+    blockExplorers: {
+        default: {
+            name: 'Robinhood Chain Explorer',
+            url: 'https://robinhoodchain.blockscout.com',
+        },
+    },
+    testnet: false,
+});
+
 // Network configuration type
 export type NetworkConfig = {
-    chain: typeof monadMainnet | typeof bnbChain | typeof avalancheChain | typeof polygonChain | typeof optimismChain | typeof hyperliquidChain | typeof ethereumChain | typeof arbitrumChain | typeof mantleChain;
-    bundlerUrl: string;
+    chain: Chain;
+    // null when no ERC-4337 bundler supports the chain; UserOps are then sent to the EntryPoint directly by the owner wallet
+    bundlerUrl: string | null;
     entryPoint: Address;
     factoryAddress: Address;
     usdcAddress: Address;
@@ -347,7 +458,7 @@ export type NetworkConfig = {
 };
 
 // Network key type
-export type NetworkKey = 'monad' | 'bnb' | 'avax' | 'polygon' | 'optimism' | 'hyperliquid' | 'ethereum' | 'arbitrum' | 'mantle';
+export type NetworkKey = 'monad' | 'bnb' | 'avax' | 'polygon' | 'optimism' | 'hyperliquid' | 'ethereum' | 'arbitrum' | 'mantle' | 'celo' | 'zksync' | 'robinhood';
 
 // Network configurations
 export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
@@ -423,6 +534,30 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
         usdcAddress: '0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9' as Address,
         usdcDecimals: 6,
     },
+    celo: {
+        chain: celoChain,
+        bundlerUrl: 'https://api.pimlico.io/v2/42220/rpc?apikey=pim_DgBeb1uoMpzzV4RG1Kxy6E',
+        entryPoint: '0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789' as Address,
+        factoryAddress: '0xdE320c2E2b4953883f61774c006f9057A55B97D1' as Address,
+        usdcAddress: '0xcebA9300f2b948710d2653dD7B07f33A8B32118C' as Address,
+        usdcDecimals: 6,
+    },
+    zksync: {
+        chain: zksyncChain,
+        bundlerUrl: null, // Pimlico does not support zkSync Era
+        entryPoint: '0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789' as Address,
+        factoryAddress: '0xdE320c2E2b4953883f61774c006f9057A55B97D1' as Address,
+        usdcAddress: '0x1d17CBcF0D6D143135aE902365D2E5e2A16538D4' as Address,
+        usdcDecimals: 6,
+    },
+    robinhood: {
+        chain: robinhoodChain,
+        bundlerUrl: 'https://api.pimlico.io/v2/4663/rpc?apikey=pim_DgBeb1uoMpzzV4RG1Kxy6E',
+        entryPoint: '0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789' as Address,
+        factoryAddress: '0xdE320c2E2b4953883f61774c006f9057A55B97D1' as Address,
+        usdcAddress: '0x80e0e24718dbFcad49ECAA6F1e6C89A190586cA8' as Address,
+        usdcDecimals: 6,
+    },
 };
 
 // Network display labels
@@ -436,6 +571,9 @@ export const NETWORK_LABELS: Record<NetworkKey, string> = {
     ethereum: 'Ethereum',
     arbitrum: 'Arbitrum',
     mantle: 'Mantle',
+    celo: 'Celo',
+    zksync: 'zkSync Era',
+    robinhood: 'Robinhood Chain',
 };
 
 // Network chain IDs
@@ -449,6 +587,9 @@ export const NETWORK_CHAIN_IDS: Record<NetworkKey, number> = {
     ethereum: 1,
     arbitrum: 42161,
     mantle: 5000,
+    celo: 42220,
+    zksync: 324,
+    robinhood: 4663,
 };
 
 // Helper to get all networks sorted alphabetically by label
@@ -469,4 +610,7 @@ export const THIRDWEB_CHAINS: Record<NetworkKey, ReturnType<typeof defineThirdwe
     ethereum: ethereumThirdwebChain,
     arbitrum: arbitrumThirdwebChain,
     mantle: mantleThirdwebChain,
+    celo: celoThirdwebChain,
+    zksync: zksyncThirdwebChain,
+    robinhood: robinhoodThirdwebChain,
 };
