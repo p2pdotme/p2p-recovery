@@ -89,7 +89,13 @@ console.log(`Deploying from ${account.address}: gas ${gas}, est. cost ${Number(g
 const hash = await walletClient.sendTransaction({ to: CREATE2_DEPLOYER, data, gas: (gas * 12n) / 10n });
 console.log(`Sent: ${hash}`);
 const receipt = await publicClient.waitForTransactionReceipt({ hash });
-if (receipt.status !== 'success' || !(await hasCode(FACTORY))) {
+// Load-balanced RPCs can lag a block behind the receipt, so retry the code check briefly
+let deployed = false;
+for (let i = 0; receipt.status === 'success' && !deployed && i < 10; i++) {
+    deployed = await hasCode(FACTORY);
+    if (!deployed) await new Promise((r) => setTimeout(r, 2000));
+}
+if (!deployed) {
     console.error(`Deployment failed (status ${receipt.status})`);
     process.exit(1);
 }
