@@ -455,6 +455,8 @@ export type NetworkConfig = {
     factoryAddress: Address;
     usdcAddress: Address;
     usdcDecimals: number;
+    // Additional tokens always listed for recovery alongside native and USDC
+    extraTokens?: { address: Address; symbol: string; name: string; decimals: number }[];
 };
 
 // Network key type
@@ -557,6 +559,14 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
         factoryAddress: '0xdE320c2E2b4953883f61774c006f9057A55B97D1' as Address,
         usdcAddress: '0x80e0e24718dbFcad49ECAA6F1e6C89A190586cA8' as Address,
         usdcDecimals: 6,
+        extraTokens: [
+            {
+                address: '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168' as Address,
+                symbol: 'USDG',
+                name: 'Global Dollar',
+                decimals: 6,
+            },
+        ],
     },
 };
 
