@@ -73,10 +73,12 @@ export async function POST(request: NextRequest) {
     // Fetch balances for all tokens (excluding USDC as we'll add it explicitly later)
     const tokensWithBalance = []
     const usdcAddressLower = networkConfig.usdcAddress.toLowerCase()
+    const extraTokens = networkConfig.extraTokens ?? []
+    const extraTokenAddressesLower = new Set(extraTokens.map(token => token.address.toLowerCase()))
 
     for (const tokenAddr of allTokenAddresses) {
-      // Skip USDC here as we'll add it explicitly later
-      if (tokenAddr === usdcAddressLower) continue
+      // Skip USDC and configured extra tokens here as we'll add them explicitly later
+      if (tokenAddr === usdcAddressLower || extraTokenAddressesLower.has(tokenAddr)) continue
       
       try {
         const contract = new ethers.Contract(tokenAddr, ERC20_ABI, provider)
@@ -137,6 +139,26 @@ export async function POST(request: NextRequest) {
       })
     } catch (err) {
       console.error('Error fetching USDC balance:', err)
+    }
+
+    // Always fetch and include configured extra tokens (e.g. USDG on Robinhood Chain)
+    for (const token of extraTokens) {
+      try {
+        const contract = new ethers.Contract(token.address, ERC20_ABI, provider)
+        const bal = await contract.balanceOf(address)
+
+        // Add after native token and USDC, ahead of discovered tokens
+        tokensWithBalance.splice(Math.min(2, tokensWithBalance.length), 0, {
+          symbol: token.symbol,
+          name: token.name,
+          address: token.address.toLowerCase(),
+          balance: ethers.formatUnits(bal, token.decimals),
+          balanceRaw: bal.toString(),
+          decimals: token.decimals
+        })
+      } catch (err) {
+        console.error(`Error fetching ${token.symbol} balance:`, err)
+      }
     }
     
     return NextResponse.json({
