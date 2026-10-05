@@ -417,7 +417,7 @@ export function TokenTransfer({ network }: TokenTransferProps) {
                         networkConfig.entryPoint,
                         networkConfig.chain.id
                     )
-                    userOp.paymasterAndData = paymasterData.paymasterAndData
+                    userOp = { ...userOp, ...paymasterData }
                 } catch (e: any) {
                     console.warn('Failed to get paymaster data, user will pay gas:', e.message)
                 }

@@ -365,12 +365,21 @@ export async function submitUserOpDirect(
     return { txHash: receipt.transactionHash };
 }
 
+// Paymaster response: the gas limits are part of what the paymaster signed, so
+// when present they must replace the UserOperation's own values before signing
+export type PaymasterData = {
+    paymasterAndData: `0x${string}`;
+    callGasLimit?: bigint;
+    verificationGasLimit?: bigint;
+    preVerificationGas?: bigint;
+};
+
 // Get Thirdweb Paymaster data for sponsored transactions
 export async function getThirdwebPaymasterData(
     userOp: any,
     entryPoint: Address,
     chainId: number
-): Promise<{ paymasterAndData: `0x${string}` }> {
+): Promise<PaymasterData> {
     try {
         const clientId = client.clientId;
         if (!clientId) {
@@ -416,7 +425,13 @@ export async function getThirdwebPaymasterData(
 
         if (data.result?.paymasterAndData) {
             console.log('Gas sponsored by Thirdweb paymaster');
-            return { paymasterAndData: data.result.paymasterAndData as `0x${string}` };
+            const { callGasLimit, verificationGasLimit, preVerificationGas } = data.result;
+            return {
+                paymasterAndData: data.result.paymasterAndData as `0x${string}`,
+                ...(callGasLimit ? { callGasLimit: BigInt(callGasLimit) } : {}),
+                ...(verificationGasLimit ? { verificationGasLimit: BigInt(verificationGasLimit) } : {}),
+                ...(preVerificationGas ? { preVerificationGas: BigInt(preVerificationGas) } : {}),
+            };
         }
 
         return { paymasterAndData: '0x' as `0x${string}` };
@@ -743,7 +758,7 @@ export async function deploySmartAccountWithWallet(
                     network.entryPoint,
                     network.chain.id
                 );
-                userOp.paymasterAndData = paymasterData.paymasterAndData;
+                userOp = { ...userOp, ...paymasterData };
             } catch (e: any) {
                 console.warn('Failed to get paymaster data, user will pay gas:', e.message);
             }
