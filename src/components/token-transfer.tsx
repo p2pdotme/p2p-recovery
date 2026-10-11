@@ -16,16 +16,15 @@ import {
     isAccountDeployed,
     getInitCode,
     signUserOpHashWithThirdwebWallet,
-    getThirdwebPaymasterData,
+    prepareGasAndSponsorship,
     getDirectGasPrices,
     submitUserOpDirect,
-    DIRECT_GAS_LIMITS
+    DIRECT_GAS_LIMITS,
+    DUMMY_SIGNATURE
 } from '@/lib/smart-account'
 import { ArrowRight, Loader2, CheckCircle, AlertCircle, Copy, X, AlertTriangle, ChevronDown } from 'lucide-react'
 import { NETWORKS, NETWORK_LABELS, type NetworkKey } from '@/lib/network'
 import { useActiveAccount, useActiveWallet } from 'thirdweb/react'
-
-const DUMMY_SIGNATURE = '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c'
 
 interface TokenInfo {
     symbol: string
@@ -392,35 +391,8 @@ export function TokenTransfer({ network }: TokenTransferProps) {
             }
 
             if (bundlerUrl) {
-                // Estimate gas
-                try {
-                    const gasEstimate = await bundlerRpc('eth_estimateUserOperationGas', [
-                        formatUserOpForBundler(userOp),
-                        networkConfig.entryPoint,
-                    ], bundlerUrl)
-
-                    if (gasEstimate) {
-                        userOp.callGasLimit = BigInt(gasEstimate.callGasLimit || '0x493e0')
-                        userOp.verificationGasLimit = BigInt(gasEstimate.verificationGasLimit || '0x493e0')
-                        // Ensure preVerificationGas is at least 600000 or the estimated value, whichever is higher
-                        const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0')
-                        userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n
-                    }
-                } catch (e: any) {
-                    console.warn('Gas estimation failed, using defaults:', e.message)
-                }
-
-                // Get paymaster data from Thirdweb (for sponsored gas)
-                try {
-                    const paymasterData = await getThirdwebPaymasterData(
-                        userOp,
-                        networkConfig.entryPoint,
-                        networkConfig.chain.id
-                    )
-                    userOp = { ...userOp, ...paymasterData }
-                } catch (e: any) {
-                    console.warn('Failed to get paymaster data, user will pay gas:', e.message)
-                }
+                // Gas limits + Thirdweb sponsorship (falls back to user-paid gas with the defaults above)
+                userOp = await prepareGasAndSponsorship(userOp, networkConfig.entryPoint, networkConfig.chain.id, bundlerUrl)
             }
 
             // Sign UserOperation using Thirdweb wallet (owner account, not smart account)
@@ -502,6 +474,9 @@ export function TokenTransfer({ network }: TokenTransferProps) {
 
                 // Notify components to refresh deployment status
                 window.dispatchEvent(new Event('smartAccountUpdated'))
+                if (!deployed) {
+                    window.dispatchEvent(new Event('smartAccountDeployed'))
+                }
             } else {
                 setSuccess(`Transaction pending. Check explorer for UserOp: ${userOpHashResult}`)
             }
