@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { Address } from 'viem'
-import { deriveSmartAccountAddress, isAccountDeployed, deploySmartAccountWithWallet } from '@/lib/smart-account'
+import { deriveSmartAccountAddress, isAccountDeployed, deploySmartAccountWithWallet, waitForAccountDeployment } from '@/lib/smart-account'
 import { saveSmartAccountData } from '@/lib/storage'
 import { Copy, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
 import { type NetworkKey } from '@/lib/network'
@@ -30,6 +30,9 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
 
   // Derive smart account when P2P user wallet is available
   useEffect(() => {
+    // Ignore results from a derivation that was superseded by a wallet or network change
+    let cancelled = false
+
     const deriveAccount = async () => {
       if (!p2pUserWallet || !p2pUserWallet.startsWith('0x')) {
         setSmartAccountAddress('')
@@ -51,6 +54,7 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
           factoryData as `0x${string}`,
           network
         )
+        if (cancelled) return
 
         setSmartAccountAddress(smartAccount)
 
@@ -67,8 +71,10 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
 
         // Check if account is deployed
         const deployed = await isAccountDeployed(smartAccount, network)
+        if (cancelled) return
         setIsDeployed(deployed)
       } catch (err: any) {
+        if (cancelled) return
         // Only log if it's not a handled error (to prevent Next.js error overlay)
         if (!(err as any).isHandled) {
           console.error('Error deriving smart account:', err)
@@ -78,12 +84,33 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
         setIsDeployed(null)
         onSmartAccountChange?.('')
       } finally {
-        setIsLoading(false)
+        if (!cancelled) setIsLoading(false)
       }
     }
 
     deriveAccount()
+
+    return () => {
+      cancelled = true
+    }
   }, [p2pUserWallet, network, factoryAddress, factoryData])
+
+  // A transfer from an undeployed account deploys it as a side effect; refresh the status
+  useEffect(() => {
+    if (!smartAccountAddress) return
+    let cancelled = false
+
+    const refreshDeployment = async () => {
+      const deployed = await waitForAccountDeployment(smartAccountAddress as Address, network)
+      if (!cancelled) setIsDeployed(deployed)
+    }
+
+    window.addEventListener('smartAccountDeployed', refreshDeployment)
+    return () => {
+      cancelled = true
+      window.removeEventListener('smartAccountDeployed', refreshDeployment)
+    }
+  }, [smartAccountAddress, network])
 
   const copyToClipboard = async (text: string) => {
     try {
@@ -118,8 +145,8 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
             ? `Deployment successful! Transaction: ${result.txHash.slice(0, 10)}...${result.txHash.slice(-8)}`
             : 'Deployment successful!'
         )
-        // Refresh deployment status
-        const deployed = await isAccountDeployed(smartAccountAddress as Address, network)
+        // Refresh deployment status; the RPC may lag a block behind the bundler receipt
+        const deployed = await waitForAccountDeployment(smartAccountAddress as Address, network)
         setIsDeployed(deployed)
         // Clear success message after 5 seconds
         setTimeout(() => setDeploySuccess(''), 5000)
