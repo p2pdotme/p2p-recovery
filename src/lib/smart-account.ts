@@ -257,6 +257,98 @@ export async function bundlerRpc(method: string, params: any[], bundlerRpcUrl: s
     return data.result;
 }
 
+export type EstimatedGas = {
+    callGasLimit: bigint;
+    verificationGasLimit: bigint;
+    preVerificationGas: bigint;
+};
+
+// Bundlers simulate estimation with the UserOp's own fee values, so a smart account that
+// holds no native token fails with "AA21 didn't pay prefund" before a paymaster is even
+// attached. Overriding the sender's balance for the simulation lets estimation succeed.
+const ESTIMATION_BALANCE_OVERRIDE = toHex(10n ** 21n);
+
+// Ask the bundler for gas limits. Missing fields come back as 0n so callers can apply floors.
+export async function estimateUserOpGas(
+    userOp: { sender: string; [field: string]: unknown },
+    entryPoint: Address,
+    bundlerUrl: string
+): Promise<EstimatedGas> {
+    const estimate = await bundlerRpc('eth_estimateUserOperationGas', [
+        formatUserOpForBundler(userOp),
+        entryPoint,
+        { [userOp.sender]: { balance: ESTIMATION_BALANCE_OVERRIDE } },
+    ], bundlerUrl);
+    return {
+        callGasLimit: BigInt(estimate?.callGasLimit ?? 0),
+        verificationGasLimit: BigInt(estimate?.verificationGasLimit ?? 0),
+        preVerificationGas: BigInt(estimate?.preVerificationGas ?? 0),
+    };
+}
+
+// Placeholder signature used while estimating gas and requesting sponsorship
+export const DUMMY_SIGNATURE = '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c' as `0x${string}`;
+
+export type GasLimitedUserOp = {
+    sender: string;
+    callGasLimit: bigint;
+    verificationGasLimit: bigint;
+    preVerificationGas: bigint;
+    paymasterAndData: `0x${string}`;
+    [field: string]: unknown;
+};
+
+// Apply a bundler estimate, keeping the op's own values as floors/fallbacks
+function withEstimate<T extends GasLimitedUserOp>(userOp: T, estimate: EstimatedGas): T {
+    return {
+        ...userOp,
+        callGasLimit: estimate.callGasLimit > userOp.callGasLimit ? estimate.callGasLimit : userOp.callGasLimit,
+        verificationGasLimit: estimate.verificationGasLimit || userOp.verificationGasLimit,
+        preVerificationGas: estimate.preVerificationGas || userOp.preVerificationGas,
+    };
+}
+
+// Resolve gas limits and sponsorship the way thirdweb's SDK does (wallets/smart/lib/userop.ts):
+// 1. ask the paymaster with zero limits so it can size the op itself;
+// 2. if it returns no limits, estimate with the paymaster attached, because its validation
+//    runs inside verificationGasLimit (estimating without it is what produces AA33 OOG);
+// 3. the paymaster signed over the old limits, so it must sign again over the new ones.
+export async function prepareGasAndSponsorship<T extends GasLimitedUserOp>(
+    userOp: T,
+    entryPoint: Address,
+    chainId: number,
+    bundlerUrl: string
+): Promise<T> {
+    const paymaster = await getThirdwebPaymasterData(
+        { ...userOp, callGasLimit: 0n, verificationGasLimit: 0n, preVerificationGas: 0n },
+        entryPoint,
+        chainId
+    );
+    const sponsored = paymaster.paymasterAndData !== '0x';
+
+    if (sponsored && paymaster.callGasLimit && paymaster.verificationGasLimit && paymaster.preVerificationGas) {
+        return { ...userOp, ...paymaster };
+    }
+
+    let estimated: T = { ...userOp, paymasterAndData: paymaster.paymasterAndData };
+    try {
+        estimated = withEstimate(estimated, await estimateUserOpGas(estimated, entryPoint, bundlerUrl));
+    } catch (e: any) {
+        console.warn('Gas estimation failed, using defaults:', e.message);
+    }
+
+    if (!sponsored) {
+        return estimated;
+    }
+
+    const resigned = await getThirdwebPaymasterData(estimated, entryPoint, chainId);
+    if (resigned.paymasterAndData === '0x') {
+        console.warn('Paymaster declined to re-sign with estimated gas limits, user will pay gas');
+        return { ...estimated, paymasterAndData: '0x' as `0x${string}` };
+    }
+    return { ...estimated, ...resigned };
+}
+
 // Gas limits for direct EntryPoint submission (no bundler estimation available).
 // Generous because zkSync Era runs EVM bytecode through its emulator.
 export const DIRECT_GAS_LIMITS = {
@@ -399,18 +491,9 @@ export async function getThirdwebPaymasterData(
                 jsonrpc: '2.0',
                 id: 1,
                 method: 'pm_sponsorUserOperation',
+                // Same op shape thirdweb's own SDK sends: dummy signature, no paymaster yet
                 params: [
-                    {
-                        sender: userOp.sender,
-                        nonce: toHex(userOp.nonce),
-                        initCode: userOp.initCode,
-                        callData: userOp.callData,
-                        callGasLimit: toHex(userOp.callGasLimit),
-                        verificationGasLimit: toHex(userOp.verificationGasLimit),
-                        preVerificationGas: toHex(userOp.preVerificationGas),
-                        maxFeePerGas: toHex(userOp.maxFeePerGas),
-                        maxPriorityFeePerGas: toHex(userOp.maxPriorityFeePerGas),
-                    },
+                    formatUserOpForBundler({ ...userOp, paymasterAndData: '0x', signature: DUMMY_SIGNATURE }),
                     entryPoint,
                 ],
             }),
@@ -483,6 +566,25 @@ export async function isAccountDeployed(
     }
 }
 
+// Poll for the account's bytecode. Load-balanced RPCs (e.g. Celo's forno) can lag a block
+// behind a receipt, so a single check right after deployment may still see empty code.
+export async function waitForAccountDeployment(
+    accountAddress: Address,
+    networkKey: NetworkKey,
+    attempts = 10,
+    delayMs = 2000
+): Promise<boolean> {
+    for (let i = 0; i < attempts; i++) {
+        if (await isAccountDeployed(accountAddress, networkKey)) {
+            return true;
+        }
+        if (i < attempts - 1) {
+            await new Promise(r => setTimeout(r, delayMs));
+        }
+    }
+    return false;
+}
+
 // Generate initCode for account deployment
 export function getInitCode(factoryAddress: Address, ownerAddress: Address): `0x${string}` {
     const createAccountCallData = encodeFunctionData({
@@ -546,9 +648,6 @@ export async function deploySmartAccount(
             maxPriorityFeePerGas = 1500000000n;
         }
 
-        // Dummy signature for gas estimation
-        const DUMMY_SIG = '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
-
         // Build UserOperation for deployment (empty callData - just deploy)
         let userOp = {
             sender: smartAccountAddress,
@@ -561,7 +660,7 @@ export async function deploySmartAccount(
             maxFeePerGas: maxFeePerGas,
             maxPriorityFeePerGas: maxPriorityFeePerGas,
             paymasterAndData: '0x' as `0x${string}`,
-            signature: DUMMY_SIG as `0x${string}`,
+            signature: DUMMY_SIGNATURE,
         };
 
         // Estimate gas
@@ -712,9 +811,6 @@ export async function deploySmartAccountWithWallet(
             }
         }
 
-        // Dummy signature for gas estimation
-        const DUMMY_SIG = '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
-
         // Build UserOperation for deployment (empty callData - just deploy)
         let userOp = {
             sender: smartAccountAddress,
@@ -727,41 +823,12 @@ export async function deploySmartAccountWithWallet(
             maxFeePerGas: maxFeePerGas,
             maxPriorityFeePerGas: maxPriorityFeePerGas,
             paymasterAndData: '0x' as `0x${string}`,
-            signature: DUMMY_SIG as `0x${string}`,
+            signature: DUMMY_SIGNATURE,
         };
 
-        // Estimate gas
+        // Gas limits + Thirdweb sponsorship (falls back to user-paid gas with the defaults above)
         if (bundlerUrl) {
-            try {
-                const gasEstimate = await bundlerRpc('eth_estimateUserOperationGas', [
-                    formatUserOpForBundler(userOp),
-                    network.entryPoint,
-                ], bundlerUrl);
-
-                if (gasEstimate) {
-                    userOp.callGasLimit = BigInt(gasEstimate.callGasLimit || '0x186a0');
-                    userOp.verificationGasLimit = BigInt(gasEstimate.verificationGasLimit || '0xf4240');
-                    // Ensure preVerificationGas is at least 600000 or the estimated value, whichever is higher
-                    const estimatedPreVerificationGas = BigInt(gasEstimate.preVerificationGas || '0x927c0');
-                    userOp.preVerificationGas = estimatedPreVerificationGas > 600000n ? estimatedPreVerificationGas : 600000n;
-                }
-            } catch (e: any) {
-                console.warn('Gas estimation failed, using defaults:', e.message);
-            }
-        }
-
-        // Get paymaster data from Thirdweb (for sponsored gas)
-        if (bundlerUrl) {
-            try {
-                const paymasterData = await getThirdwebPaymasterData(
-                    userOp,
-                    network.entryPoint,
-                    network.chain.id
-                );
-                userOp = { ...userOp, ...paymasterData };
-            } catch (e: any) {
-                console.warn('Failed to get paymaster data, user will pay gas:', e.message);
-            }
+            userOp = await prepareGasAndSponsorship(userOp, network.entryPoint, network.chain.id, bundlerUrl);
         }
 
         // Sign UserOperation using Thirdweb wallet
@@ -819,13 +886,18 @@ export async function deploySmartAccountWithWallet(
                 txHash: receipt.receipt?.transactionHash,
                 userOpHash: userOpHashResult
             };
-        } else {
-            return {
-                success: false,
-                error: 'Deployment transaction pending or failed',
-                userOpHash: userOpHashResult
-            };
         }
+
+        // The bundler's receipt can lag behind inclusion; the chain itself is the source of truth
+        if (await waitForAccountDeployment(smartAccountAddress, networkKey, 5)) {
+            return { success: true, userOpHash: userOpHashResult };
+        }
+
+        return {
+            success: false,
+            error: 'Deployment transaction pending or failed',
+            userOpHash: userOpHashResult
+        };
 
     } catch (error: any) {
         console.error('Error deploying smart account with wallet:', error);

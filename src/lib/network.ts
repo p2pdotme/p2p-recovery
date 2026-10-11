@@ -543,6 +543,14 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
         factoryAddress: '0xdE320c2E2b4953883f61774c006f9057A55B97D1' as Address,
         usdcAddress: '0xcebA9300f2b948710d2653dD7B07f33A8B32118C' as Address,
         usdcDecimals: 6,
+        extraTokens: [
+            {
+                address: '0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e' as Address,
+                symbol: 'USDT',
+                name: 'Tether USD',
+                decimals: 6,
+            },
+        ],
     },
     zksync: {
         chain: zksyncChain,
