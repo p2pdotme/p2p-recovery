@@ -237,11 +237,37 @@ export function formatUserOpForBundler(userOp: any) {
     };
 }
 
+// A bundler JSON-RPC endpoint plus any auth headers it needs
+export type BundlerEndpoint = { url: string; headers?: Record<string, string> };
+
+// Thirdweb's bundler, the only one its paymaster accepts ops from (same endpoint the SDK uses)
+export function getThirdwebBundler(chainId: number): BundlerEndpoint {
+    return {
+        url: `https://${chainId}.bundler.thirdweb.com/v2`,
+        headers: { 'x-client-id': client.clientId },
+    };
+}
+
+export function isSponsored(userOp: { paymasterAndData: `0x${string}` }): boolean {
+    return userOp.paymasterAndData !== '0x';
+}
+
+// Sponsored ops must be submitted through Thirdweb's bundler: its paymaster reverts with
+// BundlerNotAllowed(tx.origin) for any other relayer, which bundlers report as "AA33 reverted (or OOG)"
+export function getSubmissionBundler(
+    userOp: { paymasterAndData: `0x${string}` },
+    chainId: number,
+    bundlerUrl: string
+): BundlerEndpoint {
+    return isSponsored(userOp) ? getThirdwebBundler(chainId) : { url: bundlerUrl };
+}
+
 // JSON-RPC call helper
-export async function bundlerRpc(method: string, params: any[], bundlerRpcUrl: string) {
-    const response = await fetch(bundlerRpcUrl, {
+export async function bundlerRpc(method: string, params: any[], bundler: string | BundlerEndpoint) {
+    const endpoint = typeof bundler === 'string' ? { url: bundler } : bundler;
+    const response = await fetch(endpoint.url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(endpoint.headers ?? {}) },
         body: JSON.stringify({
             jsonrpc: '2.0',
             id: 1,
@@ -272,13 +298,13 @@ const ESTIMATION_BALANCE_OVERRIDE = toHex(10n ** 21n);
 export async function estimateUserOpGas(
     userOp: { sender: string; [field: string]: unknown },
     entryPoint: Address,
-    bundlerUrl: string
+    bundler: string | BundlerEndpoint
 ): Promise<EstimatedGas> {
     const estimate = await bundlerRpc('eth_estimateUserOperationGas', [
         formatUserOpForBundler(userOp),
         entryPoint,
         { [userOp.sender]: { balance: ESTIMATION_BALANCE_OVERRIDE } },
-    ], bundlerUrl);
+    ], bundler);
     return {
         callGasLimit: BigInt(estimate?.callGasLimit ?? 0),
         verificationGasLimit: BigInt(estimate?.verificationGasLimit ?? 0),
@@ -294,9 +320,18 @@ export type GasLimitedUserOp = {
     callGasLimit: bigint;
     verificationGasLimit: bigint;
     preVerificationGas: bigint;
+    maxFeePerGas: bigint;
+    maxPriorityFeePerGas: bigint;
     paymasterAndData: `0x${string}`;
     [field: string]: unknown;
 };
+
+// Fee values Thirdweb's bundler will accept; the paymaster signs over them, so they
+// must be fixed before sponsorship is requested
+async function getThirdwebGasFees(chainId: number): Promise<{ maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }> {
+    const fees = await bundlerRpc('thirdweb_getUserOperationGasPrice', [], getThirdwebBundler(chainId));
+    return { maxFeePerGas: BigInt(fees.maxFeePerGas), maxPriorityFeePerGas: BigInt(fees.maxPriorityFeePerGas) };
+}
 
 // Apply a bundler estimate, keeping the op's own values as floors/fallbacks
 function withEstimate<T extends GasLimitedUserOp>(userOp: T, estimate: EstimatedGas): T {
@@ -309,42 +344,56 @@ function withEstimate<T extends GasLimitedUserOp>(userOp: T, estimate: Estimated
 }
 
 // Resolve gas limits and sponsorship the way thirdweb's SDK does (wallets/smart/lib/userop.ts):
-// 1. ask the paymaster with zero limits so it can size the op itself;
-// 2. if it returns no limits, estimate with the paymaster attached, because its validation
-//    runs inside verificationGasLimit (estimating without it is what produces AA33 OOG);
+// 1. ask the paymaster with zero limits and Thirdweb's own fee values so it can size the op;
+// 2. if it returns no limits, estimate on Thirdweb's bundler with the paymaster attached
+//    (its validation runs inside verificationGasLimit, and no other bundler may simulate it);
 // 3. the paymaster signed over the old limits, so it must sign again over the new ones.
+// A sponsored op must then be submitted through Thirdweb's bundler (see getSubmissionBundler).
+// If sponsorship is unavailable the op keeps its own fees and is estimated on the chain's bundler.
 export async function prepareGasAndSponsorship<T extends GasLimitedUserOp>(
     userOp: T,
     entryPoint: Address,
     chainId: number,
     bundlerUrl: string
 ): Promise<T> {
+    let forSponsorship: T = userOp;
+    try {
+        forSponsorship = { ...userOp, ...(await getThirdwebGasFees(chainId)) };
+    } catch (e: any) {
+        console.warn('Could not fetch Thirdweb gas fees, using bundler fees:', e.message);
+    }
+
     const paymaster = await getThirdwebPaymasterData(
-        { ...userOp, callGasLimit: 0n, verificationGasLimit: 0n, preVerificationGas: 0n },
+        { ...forSponsorship, callGasLimit: 0n, verificationGasLimit: 0n, preVerificationGas: 0n },
         entryPoint,
         chainId
     );
-    const sponsored = paymaster.paymasterAndData !== '0x';
 
-    if (sponsored && paymaster.callGasLimit && paymaster.verificationGasLimit && paymaster.preVerificationGas) {
-        return { ...userOp, ...paymaster };
+    if (!isSponsored(paymaster)) {
+        try {
+            return withEstimate(userOp, await estimateUserOpGas(userOp, entryPoint, bundlerUrl));
+        } catch (e: any) {
+            console.warn('Gas estimation failed, using defaults:', e.message);
+            return userOp;
+        }
     }
 
-    let estimated: T = { ...userOp, paymasterAndData: paymaster.paymasterAndData };
+    if (paymaster.callGasLimit && paymaster.verificationGasLimit && paymaster.preVerificationGas) {
+        return { ...forSponsorship, ...paymaster };
+    }
+
+    const thirdwebBundler = getThirdwebBundler(chainId);
+    let estimated: T = { ...forSponsorship, paymasterAndData: paymaster.paymasterAndData };
     try {
-        estimated = withEstimate(estimated, await estimateUserOpGas(estimated, entryPoint, bundlerUrl));
+        estimated = withEstimate(estimated, await estimateUserOpGas(estimated, entryPoint, thirdwebBundler));
     } catch (e: any) {
-        console.warn('Gas estimation failed, using defaults:', e.message);
-    }
-
-    if (!sponsored) {
-        return estimated;
+        console.warn('Gas estimation with paymaster failed, using defaults:', e.message);
     }
 
     const resigned = await getThirdwebPaymasterData(estimated, entryPoint, chainId);
-    if (resigned.paymasterAndData === '0x') {
+    if (!isSponsored(resigned)) {
         console.warn('Paymaster declined to re-sign with estimated gas limits, user will pay gas');
-        return { ...estimated, paymasterAndData: '0x' as `0x${string}` };
+        return { ...userOp, paymasterAndData: '0x' as `0x${string}` };
     }
     return { ...estimated, ...resigned };
 }
@@ -479,13 +528,14 @@ export async function getThirdwebPaymasterData(
             return { paymasterAndData: '0x' as `0x${string}` };
         }
 
-        // Thirdweb paymaster endpoint
-        const paymasterUrl = `https://${chainId}.bundler.thirdweb.com/${clientId}`;
+        // Thirdweb paymaster endpoint (same one the SDK uses)
+        const paymaster = getThirdwebBundler(chainId);
 
-        const response = await fetch(paymasterUrl, {
+        const response = await fetch(paymaster.url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...paymaster.headers,
             },
             body: JSON.stringify({
                 jsonrpc: '2.0',
@@ -846,14 +896,15 @@ export async function deploySmartAccountWithWallet(
             return { success: true, txHash };
         }
 
-        // Submit to bundler
+        // Submit to bundler (Thirdweb's when the op is sponsored)
+        const submissionBundler = getSubmissionBundler(userOp, network.chain.id, bundlerUrl);
         const formattedUserOp = formatUserOpForBundler(userOp);
         let userOpHashResult: string;
         try {
             userOpHashResult = await bundlerRpc('eth_sendUserOperation', [
                 formattedUserOp,
                 network.entryPoint,
-            ], bundlerUrl);
+            ], submissionBundler);
         } catch (bundlerError: any) {
             // Check for prefund error
             const errorMessage = bundlerError.message || JSON.stringify(bundlerError);
@@ -873,7 +924,7 @@ export async function deploySmartAccountWithWallet(
         while (!receipt && attempts < 30) {
             await new Promise(r => setTimeout(r, 2000));
             try {
-                receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], bundlerUrl);
+                receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], submissionBundler);
             } catch (e) {
                 // Receipt not ready yet
             }
