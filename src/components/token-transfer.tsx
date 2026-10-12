@@ -17,6 +17,7 @@ import {
     getInitCode,
     signUserOpHashWithThirdwebWallet,
     prepareGasAndSponsorship,
+    getSubmissionBundler,
     getDirectGasPrices,
     submitUserOpDirect,
     DIRECT_GAS_LIMITS,
@@ -428,12 +429,13 @@ export function TokenTransfer({ network }: TokenTransferProps) {
             if (!bundlerUrl) {
                 receiptTxHash = (await submitUserOpDirect(wallet, userOp, network)).txHash
             } else {
-                // Submit to bundler
+                // Submit to bundler (Thirdweb's when the op is sponsored)
+                const submissionBundler = getSubmissionBundler(userOp, networkConfig.chain.id, bundlerUrl)
                 const formattedUserOp = formatUserOpForBundler(userOp)
                 userOpHashResult = await bundlerRpc('eth_sendUserOperation', [
                     formattedUserOp,
                     networkConfig.entryPoint,
-                ], bundlerUrl)
+                ], submissionBundler)
 
                 setSuccess(`Transaction submitted! UserOp Hash: ${userOpHashResult}`)
 
@@ -444,7 +446,7 @@ export function TokenTransfer({ network }: TokenTransferProps) {
                 while (!receipt && attempts < 30) {
                     await new Promise(r => setTimeout(r, 2000))
                     try {
-                        receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], bundlerUrl)
+                        receipt = await bundlerRpc('eth_getUserOperationReceipt', [userOpHashResult], submissionBundler)
                     } catch (e) {
                         // Receipt not ready yet
                     }
