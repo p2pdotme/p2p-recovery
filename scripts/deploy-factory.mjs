@@ -4,7 +4,7 @@
 // address, so users' smart account addresses on the new chain match the ones they funded.
 //
 // Usage:
-//   PRIVATE_KEY=0x... node scripts/deploy-factory.mjs <celo|zksync|robinhood> [--dry-run]
+//   PRIVATE_KEY=0x... node scripts/deploy-factory.mjs <celo|zksync|robinhood|xlayer> [--dry-run]
 //
 // The deployer key only pays gas; it gets no rights over the factory.
 
@@ -23,6 +23,7 @@ const CHAINS = {
     celo: { id: 42220, name: 'Celo', rpc: 'https://forno.celo.org', symbol: 'CELO' },
     zksync: { id: 324, name: 'zkSync Era', rpc: 'https://mainnet.era.zksync.io', symbol: 'ETH' },
     robinhood: { id: 4663, name: 'Robinhood Chain', rpc: 'https://rpc.mainnet.chain.robinhood.com', symbol: 'ETH' },
+    xlayer: { id: 196, name: 'X Layer', rpc: 'https://rpc.xlayer.tech', symbol: 'OKB' },
 };
 
 const [networkKey, flag] = process.argv.slice(2);
