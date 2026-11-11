@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ethers } from 'ethers'
-import { NETWORKS, NETWORK_CHAIN_IDS, NetworkKey } from '@/lib/network'
+import { NETWORKS, NETWORK_CHAIN_IDS, DEFAULT_LOG_SCAN_BLOCKS, NetworkKey } from '@/lib/network'
 
 const ERC20_ABI = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
 
     const latestBlock = await provider.getBlockNumber()
     const transferTopic = ethers.id("Transfer(address,address,uint256)")
-    const maxBlocksToScan = 500
+    const maxBlocksToScan = networkConfig.logScanBlocks ?? DEFAULT_LOG_SCAN_BLOCKS
 
     // Get logs where address is sender
     const logsFrom = await provider.getLogs({
