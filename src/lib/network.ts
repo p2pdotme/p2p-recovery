@@ -132,6 +132,17 @@ export const robinhoodThirdwebChain = defineThirdwebChain({
     },
     rpc: "https://rpc.mainnet.chain.robinhood.com",
 });
+
+export const xlayerThirdwebChain = defineThirdwebChain({
+    id: 196,
+    name: "X Layer",
+    nativeCurrency: {
+        decimals: 18,
+        name: "OKB",
+        symbol: "OKB",
+    },
+    rpc: "https://rpc.xlayer.tech",
+});
 // Custom chain def viem client
 
 // Monad Mainnet
@@ -446,6 +457,32 @@ export const robinhoodChain = defineChain({
     testnet: false,
 });
 
+// X Layer Mainnet
+export const xlayerChain = defineChain({
+    id: 196,
+    name: 'X Layer',
+    nativeCurrency: {
+        decimals: 18,
+        name: 'OKB',
+        symbol: 'OKB',
+    },
+    rpcUrls: {
+        default: {
+            http: ['https://rpc.xlayer.tech'],
+        },
+        public: {
+            http: ['https://rpc.xlayer.tech'],
+        },
+    },
+    blockExplorers: {
+        default: {
+            name: 'OKLink',
+            url: 'https://www.oklink.com/xlayer',
+        },
+    },
+    testnet: false,
+});
+
 // Network configuration type
 export type NetworkConfig = {
     chain: Chain;
@@ -457,10 +494,15 @@ export type NetworkConfig = {
     usdcDecimals: number;
     // Additional tokens always listed for recovery alongside native and USDC
     extraTokens?: { address: Address; symbol: string; name: string; decimals: number }[];
+    // Block span for the recent-transfer token scan, for RPCs that cap eth_getLogs below the default
+    logScanBlocks?: number;
 };
 
+// Default block span scanned for recent token transfers
+export const DEFAULT_LOG_SCAN_BLOCKS = 500;
+
 // Network key type
-export type NetworkKey = 'monad' | 'bnb' | 'avax' | 'polygon' | 'optimism' | 'hyperliquid' | 'ethereum' | 'arbitrum' | 'mantle' | 'celo' | 'zksync' | 'robinhood';
+export type NetworkKey = 'monad' | 'bnb' | 'avax' | 'polygon' | 'optimism' | 'hyperliquid' | 'ethereum' | 'arbitrum' | 'mantle' | 'celo' | 'zksync' | 'robinhood' | 'xlayer';
 
 // Network configurations
 export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
@@ -576,6 +618,25 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
             },
         ],
     },
+    xlayer: {
+        chain: xlayerChain,
+        bundlerUrl: null, // Pimlico does not support X Layer
+        entryPoint: '0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789' as Address,
+        factoryAddress: '0xdE320c2E2b4953883f61774c006f9057A55B97D1' as Address,
+        // Native (Circle-issued) USDC
+        usdcAddress: '0x74b7F16337b8972027F6196A17a631aC6dE26d22' as Address,
+        usdcDecimals: 6,
+        logScanBlocks: 100, // rpc.xlayer.tech rejects eth_getLogs ranges above 100 blocks
+        extraTokens: [
+            {
+                // Bridged USDC from Ethereum; reports its symbol as USDC on-chain
+                address: '0xA8CE8aee21bC2A48a5EF670afCc9274C7bbbC035' as Address,
+                symbol: 'USDC.e',
+                name: 'Bridged USDC',
+                decimals: 6,
+            },
+        ],
+    },
 };
 
 // Network display labels
@@ -592,6 +653,7 @@ export const NETWORK_LABELS: Record<NetworkKey, string> = {
     celo: 'Celo',
     zksync: 'zkSync Era',
     robinhood: 'Robinhood Chain',
+    xlayer: 'X Layer',
 };
 
 // Network chain IDs
@@ -608,6 +670,7 @@ export const NETWORK_CHAIN_IDS: Record<NetworkKey, number> = {
     celo: 42220,
     zksync: 324,
     robinhood: 4663,
+    xlayer: 196,
 };
 
 // Helper to get all networks sorted alphabetically by label
@@ -631,4 +694,5 @@ export const THIRDWEB_CHAINS: Record<NetworkKey, ReturnType<typeof defineThirdwe
     celo: celoThirdwebChain,
     zksync: zksyncThirdwebChain,
     robinhood: robinhoodThirdwebChain,
+    xlayer: xlayerThirdwebChain,
 };
