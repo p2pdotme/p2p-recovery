@@ -5,7 +5,8 @@ import { Address } from 'viem'
 import { deriveSmartAccountAddress, isAccountDeployed, deploySmartAccountWithWallet, waitForAccountDeployment } from '@/lib/smart-account'
 import { saveSmartAccountData } from '@/lib/storage'
 import { Copy, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
-import { type NetworkKey } from '@/lib/network'
+import { NETWORKS, type NetworkKey } from '@/lib/network'
+import { deployFactoryWithWallet, isFactoryDeployed } from '@/lib/factory-deploy'
 import { useActiveWallet } from 'thirdweb/react'
 
 interface SmartAccountDisplayProps {
@@ -23,9 +24,14 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
   const [isDeploying, setIsDeploying] = useState(false)
   const [deployError, setDeployError] = useState<string>('')
   const [deploySuccess, setDeploySuccess] = useState<string>('')
+  const [factoryMissing, setFactoryMissing] = useState(false)
+  const [isDeployingFactory, setIsDeployingFactory] = useState(false)
+  const [factoryDeployError, setFactoryDeployError] = useState<string>('')
+  // Bumped to re-run the derivation once the factory has been deployed
+  const [deriveNonce, setDeriveNonce] = useState(0)
   const wallet = useActiveWallet()
 
-  const factoryAddress = '0xdE320c2E2b4953883f61774c006f9057A55B97D1'
+  const factoryAddress = NETWORKS[network].factoryAddress
   const factoryData = '0x'
 
   // Derive smart account when P2P user wallet is available
@@ -46,6 +52,8 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
 
       setIsLoading(true)
       setError('')
+      setFactoryMissing(false)
+      setFactoryDeployError('')
 
       try {
         const smartAccount = await deriveSmartAccountAddress(
@@ -83,6 +91,9 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
         setSmartAccountAddress('')
         setIsDeployed(null)
         onSmartAccountChange?.('')
+        // Offer to deploy the factory only when it is confirmed missing, not on RPC failures
+        const missing = await isFactoryDeployed(network).then((deployed) => !deployed, () => false)
+        if (!cancelled) setFactoryMissing(missing)
       } finally {
         if (!cancelled) setIsLoading(false)
       }
@@ -93,7 +104,7 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
     return () => {
       cancelled = true
     }
-  }, [p2pUserWallet, network, factoryAddress, factoryData])
+  }, [p2pUserWallet, network, factoryAddress, factoryData, deriveNonce])
 
   // A transfer from an undeployed account deploys it as a side effect; refresh the status
   useEffect(() => {
@@ -119,6 +130,26 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
       setTimeout(() => setCopied(false), 2000)
     } catch (err) {
       console.error('Failed to copy:', err)
+    }
+  }
+
+  const handleDeployFactory = async () => {
+    if (!wallet) {
+      setFactoryDeployError('Connect a wallet to deploy the factory')
+      return
+    }
+
+    setIsDeployingFactory(true)
+    setFactoryDeployError('')
+
+    try {
+      await deployFactoryWithWallet(wallet, network)
+      setDeriveNonce((n) => n + 1)
+    } catch (err: unknown) {
+      console.error('Error deploying factory:', err)
+      setFactoryDeployError(err instanceof Error ? err.message : 'Failed to deploy factory')
+    } finally {
+      setIsDeployingFactory(false)
     }
   }
 
@@ -254,9 +285,43 @@ export function SmartAccountDisplay({ network, p2pUserWallet, onSmartAccountChan
             </span>
           </div>
         ) : error ? (
-          <div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-            <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
-            <span className="text-xs text-red-700 dark:text-red-300">{error}</span>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+              <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
+              <span className="text-xs text-red-700 dark:text-red-300">{error}</span>
+            </div>
+            {factoryMissing && wallet && (
+              <>
+                <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                  The factory has to be deployed once on {NETWORKS[network].chain.name} before accounts can be recovered there.
+                  Anyone can deploy it; it lands at the same address and you only pay {NETWORKS[network].chain.nativeCurrency.symbol} gas.
+                </p>
+                <button
+                  onClick={handleDeployFactory}
+                  disabled={isDeployingFactory}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 font-medium rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                  style={{
+                    backgroundColor: '#F5F5F5',
+                    color: '#1F2937'
+                  }}
+                >
+                  {isDeployingFactory ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Deploying factory...</span>
+                    </>
+                  ) : (
+                    <span>Deploy Factory</span>
+                  )}
+                </button>
+                {factoryDeployError && (
+                  <div className="flex items-center gap-2 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
+                    <span className="text-xs text-red-700 dark:text-red-300 break-all">{factoryDeployError}</span>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         ) : smartAccountAddress ? (
           <div className="space-y-2">
