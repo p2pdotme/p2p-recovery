@@ -3,6 +3,7 @@ import { prepareTransaction, sendAndConfirmTransaction } from 'thirdweb';
 import type { Wallet } from 'thirdweb/wallets';
 import { NETWORKS, THIRDWEB_CHAINS, type NetworkKey } from './network';
 import { client } from './thirdwebClient';
+import { getDirectSenderAccount } from './direct-sender';
 
 // Deterministic deployment proxy; its calldata is a 32-byte salt followed by the init code
 const CREATE2_DEPLOYER = '0x4e59b44847b379578588920cA78FbF26c0B4956C' as Address;
@@ -85,9 +86,12 @@ export async function deployFactoryWithWallet(
     if (wallet.getChain()?.id !== chain.id) {
         await wallet.switchChain(chain);
     }
-    const account = wallet.getAccount();
-    if (!account) {
-        throw new Error('Wallet not connected');
+    const account = await getDirectSenderAccount(wallet, networkKey);
+    const balance = await getPublicClient(networkKey).getBalance({ address: account.address as Address });
+    if (balance === 0n) {
+        throw new Error(
+            `Send a small amount of ${network.chain.nativeCurrency.symbol} on ${chainName} to ${account.address} to pay for gas, then try again`
+        );
     }
 
     const receipt = await sendAndConfirmTransaction({
