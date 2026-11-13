@@ -7,6 +7,7 @@ import { TokenTransfer } from '@/components/token-transfer'
 // import { NetworkRequestsList } from '@/components/network-requests-list'
 import { WalletConnect } from '@/components/wallet-connect'
 import { SmartAccountDisplay } from '@/components/smart-account-display'
+import { SiteMovedNotice } from '@/components/site-moved-notice'
 import { ChevronDown, Search, Wallet } from 'lucide-react'
 import { saveSelectedNetwork, getSelectedNetwork } from '@/lib/storage'
 import { NETWORK_LABELS, NETWORK_CHAIN_IDS, getNetworksSortedByLabel, type NetworkKey } from '@/lib/network'
@@ -42,6 +43,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950">
+      <SiteMovedNotice />
       {/* Navigation Bar */}
       <nav className="bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-4 md:px-8 py-3">
