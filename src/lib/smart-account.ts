@@ -14,6 +14,7 @@ import { NETWORKS, THIRDWEB_CHAINS, type NetworkKey } from './network';
 import type { Wallet } from 'thirdweb/wallets';
 import { prepareTransaction, sendAndConfirmTransaction } from 'thirdweb';
 import { client } from './thirdwebClient';
+import { getDirectSenderAccount } from './direct-sender';
 
 
 // Contract ABIs
@@ -429,10 +430,7 @@ export async function submitUserOpDirect(
 ): Promise<{ txHash: string }> {
     const network = NETWORKS[networkKey];
     const chain = THIRDWEB_CHAINS[networkKey];
-    const account = wallet.getAccount();
-    if (!account) {
-        throw new Error('Wallet not connected');
-    }
+    const account = await getDirectSenderAccount(wallet, networkKey);
 
     const publicClient = createPublicClient({
         chain: network.chain,
@@ -472,7 +470,7 @@ export async function submitUserOpDirect(
         } catch (e: any) {
             throw new Error(
                 `AA21 didn't pay prefund: send a small amount of ${network.chain.nativeCurrency.symbol} on ${network.chain.name} ` +
-                `to your smart account or connected wallet to cover gas (${e.message || e})`
+                `to your smart account or to ${account.address} to cover gas (${e.message || e})`
             );
         }
     }
